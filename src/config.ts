@@ -11,6 +11,11 @@ export interface AntiGzipConfig {
   enabled: boolean;
 }
 
+export interface CacheConfig {
+  enableApiCache: boolean;
+  apiCacheTTL: number;
+}
+
 export interface Config {
   enableLinkRecognition: boolean;
   searchResultLimit: number;
@@ -26,7 +31,7 @@ export interface Config {
   defaultPassword?: string;
   pdfSendMethod: 'buffer' | 'file';
   imageSendDelay: number;
-  antiGzip: AntiGzipConfig; // [修改] 移入此分组
+  antiGzip: AntiGzipConfig;
 
   pdfEnableCompression: boolean;
   pdfCompressionQuality: number;
@@ -39,7 +44,8 @@ export interface Config {
   userAgent: string;
 
   puppeteer: PuppeteerConfig;
-  debug: boolean; // [修改] 移入此分组
+  cache: CacheConfig; // [新增] 缓存配置
+  debug: boolean;
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -69,7 +75,6 @@ export const Config: Schema<Config> = Schema.intersect([
       Schema.const('buffer').description('内存模式'),
       Schema.const('file').description('文件路径模式'),
     ]).description('发送文件的方式。若 Koishi 运行环境与机器人客户端无法共享文件系统，必须选择“内存模式”。').default('buffer'),
-    // [修改] 将抗风控设置移入此类别
     antiGzip: Schema.object({
       enabled: Schema.boolean().description('启用图片抗风控处理，可能绕过部分平台风控。此操作对视觉无影响。').default(false),
     }).description('图片抗风控 (实验性)'),
@@ -93,7 +98,6 @@ export const Config: Schema<Config> = Schema.intersect([
     userAgent: Schema.string().description('插件进行网络请求时使用的 User-Agent 标识。').default('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'),
   }).description('网络与性能'),
 
-  // [修改] 将原“高级功能”类别更名为“浏览器设置”，并只保留浏览器相关选项
   Schema.object({
     puppeteer: Schema.object({
       chromeExecutablePath: Schema.string().description('手动指定浏览器的可执行文件路径。若留空，插件将尝试自动检测。'),
@@ -101,8 +105,15 @@ export const Config: Schema<Config> = Schema.intersect([
       browserCloseTimeout: Schema.number().min(0).description('非 `persistentBrowser` 模式生效，任务结束后，关闭浏览器实例的延迟时间（0为立即关闭）。').default(30),
     }),
   }).description('浏览器设置'),
+  
+  // [新增] 缓存设置分组
+  Schema.object({
+    cache: Schema.object({
+      enableApiCache: Schema.boolean().description('启用 API 缓存。对画廊信息和搜索结果进行缓存，可提升重复请求的响应速度并降低 API 请求频率。').default(true),
+      apiCacheTTL: Schema.number().min(60000).description('API 缓存的有效时间（单位：毫秒）。').default(600000), // 10 minutes
+    }),
+  }).description('缓存设置'),
 
-  // [修改] 将 debug 设置独立为一个类别
   Schema.object({
     debug: Schema.boolean().description('启用后，将在控制台输出详细的调试日志，便于问题排查。').default(false),
   }).description('调试设置'),
