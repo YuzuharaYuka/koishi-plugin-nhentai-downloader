@@ -46,6 +46,7 @@ export interface Config {
   puppeteer: PuppeteerConfig;
   cache: CacheConfig; // [新增] 缓存配置
   debug: boolean;
+  returnApiJson: boolean; // [新增配置] 是否返回API响应json格式信息
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -116,5 +117,6 @@ export const Config: Schema<Config> = Schema.intersect([
 
   Schema.object({
     debug: Schema.boolean().description('启用后，将在控制台输出详细的调试日志，便于问题排查。').default(false),
+    returnApiJson: Schema.boolean().description('在调试模式下，指令执行后额外返回 API 响应的 JSON 格式信息，便于开发者调试。').default(false), // [新增]
   }).description('调试设置'),
 ])

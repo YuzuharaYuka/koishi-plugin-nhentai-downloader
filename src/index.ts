@@ -1,14 +1,13 @@
 // src/index.ts
-import { Context, h, Argv, Session } from 'koishi'
+import { Context, h, Session } from 'koishi'
 import { Config } from './config'
 import { logger, bufferToDataURI, sleep } from './utils'
-import { API_BASE, IMAGE_BASE, THUMB_BASE, Gallery, SearchResult, galleryUrlRegex, imageExtMap } from './api'
-import { DownloadedImage, Processor } from './processor'
+import { Processor } from './processor'
 import { PuppeteerManager } from './puppeteer'
 import { readFile, rm } from 'fs/promises'
 import { pathToFileURL } from 'url'
-import * as path from 'path'
-import type { Page } from 'puppeteer-core'
+import { ApiService, Gallery, SearchResult, galleryUrlRegex, Tag } from './services/api'
+import { NhentaiService } from './services/nhentai'
 
 export * from './config'
 export const name = 'nhentai-downloader'
@@ -51,47 +50,30 @@ interface DownloadOptions {
   key?: string;
 }
 
-class InMemoryCache {
-  private store = new Map<string, { value: any; timer?: NodeJS.Timeout }>();
-
-  async get<T>(key: string): Promise<T | undefined> {
-    const entry = this.store.get(key);
-    return entry?.value;
-  }
-
-  async set(key: string, value: any, maxAge?: number): Promise<void> {
-    const existing = this.store.get(key);
-    if (existing?.timer) {
-      clearTimeout(existing.timer);
-    }
-    let timer: NodeJS.Timeout | undefined;
-    if (maxAge) {
-      timer = setTimeout(() => this.store.delete(key), maxAge);
-    }
-    this.store.set(key, { value, timer });
-  }
-
-  dispose() {
-    for (const { timer } of this.store.values()) {
-      if (timer) clearTimeout(timer);
-    }
-    this.store.clear();
-  }
-}
+const tagTypeDisplayMap: Record<Tag['type'], string> = {
+  parody: '🎭 原作',
+  character: '👥 角色',
+  artist: '👤 作者',
+  group: '🏢 社团',
+  language: '🌐 语言',
+  category: '📚 分类',
+  tag: '🏷️ 标签',
+};
 
 class NhentaiPlugin {
   private puppeteerManager: PuppeteerManager;
   private processor: Processor;
-  private memoryCache: InMemoryCache;
+  private apiService: ApiService;
+  private nhentaiService: NhentaiService;
 
   constructor(private ctx: Context, private config: Config) {
     if (config.debug) {
       logger.info('调试模式已启用。');
     }
-    this.memoryCache = new InMemoryCache();
-    ctx.on('dispose', () => this.memoryCache.dispose());
-    this.puppeteerManager = new PuppeteerManager(ctx, config);
+    this.apiService = new ApiService(ctx, config);
     this.processor = new Processor(ctx, config);
+    this.puppeteerManager = new PuppeteerManager(ctx, config);
+    this.nhentaiService = new NhentaiService(config, this.apiService, this.processor, this.puppeteerManager);
   }
 
   public start() {
@@ -115,7 +97,6 @@ class NhentaiPlugin {
     }, true);
   }
 
-  // [优化] 恢复指令的详细用法和示例，并添加更多别名
   private registerCommands() {
     const nhCmd = this.ctx.command('nh', 'Nhentai 漫画下载与搜索工具')
       .alias('nhentai');
@@ -151,13 +132,8 @@ class NhentaiPlugin {
       .option('zip', '-z 以 ZIP 压缩包形式发送。')
       .option('image', '-i 以逐张图片形式发送。')
       .option('key', '-k <password:string> 为生成的 PDF 或 ZIP 文件设置密码。')
-      .usage(
-        '通过漫画ID或nhentai链接下载漫画。你可以选择输出格式和设置密码。\n' +
-        '未指定输出格式时，将使用插件配置中的 `defaultOutput` 选项。'
-      )
-      .example('nh download 123456 -z - 下载 ID 123456 的漫画为 ZIP')
-      .example('nh download https://nhentai.net/g/123456/ -i - 下载链接对应的漫画为逐张图片')
-      .example('nh download 123456 -p -k mypassword - 下载 ID 123456 的漫画为 PDF，密码为 mypassword')
+      .usage('...')
+      .example('...')
       .action(async ({ session, options }, idOrUrl) => {
         if (!idOrUrl) return session.send('请输入要下载的漫画ID或链接。');
         const match = idOrUrl.match(galleryUrlRegex) || idOrUrl.match(/^\d+$/);
@@ -165,7 +141,7 @@ class NhentaiPlugin {
         const id = match[1] || match[0];
         const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + `正在解析画廊 ${id}...`);
         try {
-          await this._executeDownload(session, id, options, statusMessageId);
+          await this._handleDownloadCommand(session, id, options, statusMessageId);
         } catch (error) {
           logger.error(`[下载] 任务 ID ${id} 失败: %o`, error);
           await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`);
@@ -176,8 +152,7 @@ class NhentaiPlugin {
 
     nhCmd.subcommand('.random', '随机推荐一本漫画')
       .alias('随机', 'random', 'nh随机', '天降好运')
-      .usage('随机获取一本 nhentai 漫画的详细信息，并提示是否下载。')
-      .example('nh random')
+      .usage('...')
       .action(async ({ session }) => {
         const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + '正在进行一次天降好运...');
         try {
@@ -192,8 +167,7 @@ class NhentaiPlugin {
       
     nhCmd.subcommand('.popular', '查看当前的热门漫画')
       .alias('热门', 'popular', 'nh热门')
-      .usage('获取 nhentai 当前的热门漫画列表，支持翻页和交互式下载。')
-      .example('nh popular')
+      .usage('...')
       .action(async ({ session }) => {
         const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + '正在获取热门漫画...');
         try {
@@ -207,109 +181,72 @@ class NhentaiPlugin {
       });
   }
 
-  private async getGallery(id: string): Promise<Gallery | null> {
-    const cacheKey = `nhentai:gallery:${id}`;
-    if (this.config.cache.enableApiCache) {
-      const cached = await this.memoryCache.get<Gallery>(cacheKey);
-      if (cached) {
-        if (this.config.debug) logger.info(`[Cache] 命中画廊缓存: ${id}`);
-        return cached;
-      }
-    }
-    try {
-      if (this.config.debug) logger.info(`[API] 请求画廊: ${id}`);
-      const url = `${API_BASE}/gallery/${id}`;
-      const data = await this.ctx.http.get<Gallery>(url);
-      if (!data || typeof data.id === 'undefined') throw new Error('无效的API响应');
-      if (this.config.debug) logger.info(`[API] 获取画廊 ${id} 成功。`);
-      if (this.config.cache.enableApiCache) {
-        this.memoryCache.set(cacheKey, data, this.config.cache.apiCacheTTL);
-      }
-      return data;
-    } catch (error) {
-      const errorMessage = JSON.stringify(error.response?.data || error.message, null, 2);
-      logger.error(`[API] 请求画廊 ${id} 失败: \n%s`, errorMessage);
-      return null;
-    }
-  }
+  private _formatGalleryInfo(gallery: Partial<Gallery>, displayIndex?: number): h {
+    const infoLines: string[] = [];
+    const TAG_LIMIT = 8;
+    
+    let title = '📘 ';
+    if (typeof displayIndex === 'number') title += `【${displayIndex + 1}】 `;
+    title += gallery.title?.pretty || gallery.title?.english || gallery.title?.japanese || 'N/A';
+    infoLines.push(title);
 
-  private async searchGalleries(query: string, page = 1, sort?: string): Promise<SearchResult | null> {
-    const cacheKey = `nhentai:search:${query}:${page}:${sort || ''}`;
-    if (this.config.cache.enableApiCache) {
-      const cached = await this.memoryCache.get<SearchResult>(cacheKey);
-      if (cached) {
-        if (this.config.debug) logger.info(`[Cache] 命中搜索缓存: "${query}" (第 ${page} 页, 排序: ${sort || '默认'})`);
-        return cached;
-      }
+    infoLines.push(`🆔 ID: ${gallery.id || 'N/A'}`);
+    infoLines.push(`📄 页数: ${gallery.num_pages || 'N/A'}`);
+    infoLines.push(`⭐ 收藏: ${gallery.num_favorites || 'N/A'}`);
+    if (gallery.upload_date) {
+      infoLines.push(`📅 上传于: ${new Date(gallery.upload_date * 1000).toLocaleDateString('zh-CN')}`);
     }
-    try {
-      if (this.config.debug) logger.info(`[API] 搜索: "${query}" (第 ${page} 页, 排序: ${sort || '默认'})`);
-      let url = `${API_BASE}/galleries/search?query=${encodeURIComponent(query)}&page=${page}`;
-      if (sort) url += `&sort=${sort}`;
-      const data = await this.ctx.http.get<SearchResult>(url);
-      if (this.config.debug) logger.info(`[API] 搜索成功，找到 ${data.result.length} 个原始结果。`);
-      if (this.config.cache.enableApiCache) {
-        this.memoryCache.set(cacheKey, data, this.config.cache.apiCacheTTL);
-      }
-      return data;
-    } catch (error) {
-      const errorMessage = JSON.stringify(error.response?.data || error.message, null, 2);
-      logger.error(`[API] 搜索 "${query}" 失败: \n%s`, errorMessage);
-      return null;
-    }
-  }
 
-  private _formatGalleryInfo(gallery: Partial<Gallery>, globalIndex?: number): h {
-    const getTags = (type: string) => gallery.tags?.filter(t => t.type === type).map(t => t.name).join(', ') || 'N/A';
-    const artists = getTags('artist');
-    const language = getTags('language')?.replace(/\b\w/g, l => l.toUpperCase()) || 'N/A';
-    const generalTags = gallery.tags?.filter(t => t.type === 'tag').map(t => t.name).slice(0, 5).join(', ');
-    let info = '';
-    if (typeof globalIndex === 'number') info += `【${globalIndex + 1}】 `;
-    info += `📘 ${gallery.title?.pretty || gallery.title?.english || gallery.title?.japanese || 'N/A'}\n`;
-    info += `- ID: ${gallery.id || 'N/A'}\n`;
-    info += `- 👤 作者: ${artists}\n`;
-    info += `- 🌐 语言: ${language}\n`;
-    info += `- 📄 页数: ${gallery.num_pages || 'N/A'}\n`;
-    info += `- ⭐ 收藏: ${gallery.num_favorites || 'N/A'}\n`;
-    if (gallery.upload_date) info += `- 📅 上传于: ${new Date(gallery.upload_date * 1000).toLocaleDateString('zh-CN')}\n`;
-    if (this.config.showTagsInSearch && generalTags) info += `- 🏷️ 标签: ${generalTags}...\n`;
-    if (this.config.showLinkInSearch && gallery.id) info += `🔗 链接: https://nhentai.net/g/${gallery.id}/`;
-    return h('p', info.trim());
+    const tagsByType = (gallery.tags || []).reduce((acc, tag) => {
+      if (!acc[tag.type]) acc[tag.type] = [];
+      acc[tag.type].push(tag.name);
+      return acc;
+    }, {} as Record<Tag['type'], string[]>);
+
+    for (const type in tagTypeDisplayMap) {
+      const key = type as Tag['type'];
+      if (tagsByType[key] && this.config.showTagsInSearch) {
+        let names = tagsByType[key];
+        
+        if (key === 'language') {
+          names = names.map(name => name.replace(/\b\w/g, l => l.toUpperCase()));
+        }
+        
+        if (key === 'tag' && names.length > TAG_LIMIT) {
+          names = [...names.slice(0, TAG_LIMIT), '...'];
+        }
+        
+        infoLines.push(`${tagTypeDisplayMap[key]}: ${names.join(', ')}`);
+      }
+    }
+    
+    if (this.config.showLinkInSearch && gallery.id) {
+      infoLines.push(`🔗 链接: https://nhentai.net/g/${gallery.id}/`);
+    }
+
+    return h('p', infoLines.join('\n'));
   }
 
   private async _handleIdSearch(session: Session, id: string) {
-    const gallery = await this.getGallery(id);
-    if (!gallery) {
+    const result = await this.nhentaiService.getGalleryWithCover(id);
+    if (!result) {
       await session.send(`获取画廊 ${id} 信息失败，请检查ID或链接是否正确。`);
       return;
     }
+    
+    const { gallery, cover } = result;
     const galleryNode = this._formatGalleryInfo(gallery);
-    let imageElement: h | null = null;
-    const thumb = gallery.images?.thumbnail;
-    let page: Page | null = null;
-    if (thumb && gallery.media_id) {
-        const thumbUrl = `${THUMB_BASE}/galleries/${gallery.media_id}/thumb.${imageExtMap[thumb.t] || 'jpg'}`;
-        try {
-          page = await this.puppeteerManager.getPage();
-          const result = await this.processor.downloadImage(page, thumbUrl, 0, gallery.id as string, 1);
-          if ('buffer' in result) {
-            const processedBuffer = await this.processor.applyAntiGzip(result.buffer, `thumb-${gallery.id}`);
-            imageElement = h.image(bufferToDataURI(processedBuffer, `image/${result.extension}`));
-          }
-        } catch (e) {
-          logger.warn(`[搜索][ID] 下载缩略图失败: %o`, e);
-        } finally {
-          if (page) await this.puppeteerManager.releasePage(page);
-        }
-    }
     const message = h('message', galleryNode);
-    if(imageElement) message.children.push(imageElement);
+    if (cover) {
+      message.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)));
+    }
+
     if (this.config.useForwardForSearch && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform)) {
       await session.send(h('figure', {}, message));
     } else {
       await session.send(message);
     }
+
     await session.send(`是否下载 ID ${id} 的漫画? (Y/N)`);
     const reply = await session.prompt(this.config.promptTimeout);
     if (!reply) {
@@ -320,214 +257,199 @@ class NhentaiPlugin {
       await session.send('操作已取消。');
     }
   }
-
+  
   private async _handleKeywordSearch(session: Session, query: string, sort?: string) {
-    let currentPage = 1;
     const limit = this.config.searchResultLimit > 0 ? this.config.searchResultLimit : 10;
-    let currentSearchResult: SearchResult | null = null;
-    let totalPages = 0;
-    const fetchAndDisplayResults = async (page: number) => {
-      currentSearchResult = await this.searchGalleries(query, page, sort);
-      if (!currentSearchResult || !currentSearchResult.result || currentSearchResult.result.length === 0) {
-        await session.send(`未找到与“${query}”相关的漫画。`);
-        return null;
+    
+    let allResults: Partial<Gallery>[] = [];
+    let totalApiPages = 0;
+    let fetchedApiPage = 0;
+    let currentDisplayPage = 1;
+    let totalResultsCount = 0;
+
+    const fetchApiPage = async (apiPageNum: number) => {
+      const result = await this.apiService.searchGalleries(query, apiPageNum, sort);
+      if (!result || result.result.length === 0) return false;
+      
+      allResults.push(...result.result);
+      if (apiPageNum === 1) {
+        totalApiPages = result.num_pages;
+        totalResultsCount = result.num_pages * result.per_page;
       }
-      totalPages = Math.ceil((currentSearchResult.num_pages || 0) / currentSearchResult.per_page);
-      if (currentSearchResult.num_pages === 0) totalPages = 0;
-      else if (currentSearchResult.num_pages <= currentSearchResult.per_page) totalPages = 1;
-      if (page > totalPages && totalPages > 0) {
-        currentPage = 1;
-        return fetchAndDisplayResults(currentPage);
-      }
-      const resultsToProcess = currentSearchResult.result.slice(0, limit);
-      const galleryQueue = [...resultsToProcess.map((g, idx) => ({ g, originalIndex: idx }))];
-      const messageNodes = new Map<string, h>();
-      const workerPages: Page[] = await Promise.all(
-        Array.from({ length: this.config.downloadConcurrency }, () => this.puppeteerManager.getPage())
-      );
-      const workerTasks = workerPages.map(page => (async () => {
-        let item;
-        while ((item = galleryQueue.shift())) {
-          const { g: gallery, originalIndex } = item;
-          if (!gallery?.id || !gallery.title) continue;
-          try {
-            const globalResultIndex = originalIndex + ((currentPage - 1) * limit);
-            const galleryInfoNode = this._formatGalleryInfo(gallery, globalResultIndex);
-            let imageElement: h | null = null;
-            const thumb = gallery.images?.thumbnail;
-            if (thumb && gallery.media_id) {
-                const thumbUrl = `${THUMB_BASE}/galleries/${gallery.media_id}/thumb.${imageExtMap[thumb.t] || 'jpg'}`;
-                const result = await this.processor.downloadImage(page, thumbUrl, 0, gallery.id as string, 1);
-                if ('buffer' in result) {
-                  const processedBuffer = await this.processor.applyAntiGzip(result.buffer, `thumb-${gallery.id}`);
-                  imageElement = h.image(bufferToDataURI(processedBuffer, `image/${result.extension}`));
-                }
-            }
-            const messageNode = h('message', galleryInfoNode);
-            if(imageElement) messageNode.children.push(imageElement);
-            messageNodes.set(gallery.id as string, messageNode);
-          } catch (itemError) {
-            logger.error(`[搜索][Worker] 处理画廊 ID ${gallery?.id || '未知'} 时出错: %o`, itemError);
-          }
-        }
-      })());
-      await Promise.all(workerTasks);
-      for (const p of workerPages) await this.puppeteerManager.releasePage(p);
-      const finalMessageNodes = resultsToProcess.map(g => messageNodes.get(g.id as string)).filter(Boolean);
-      if (finalMessageNodes.length === 0) {
-        await session.send('所有漫画处理失败，请稍后再试。');
-        return null;
-      }
-      const header = h('message', h('p', `找到 ${finalMessageNodes.length} 个结果 (第 ${currentPage} / ${totalPages} 页)。`));
-      if (this.config.useForwardForSearch && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform)) {
-        await session.send(h('figure', {}, [header, ...finalMessageNodes]));
-      } else {
-        await session.send([header, ...finalMessageNodes.flatMap(m => m.children)]);
-      }
-      return currentSearchResult;
-    };
-    currentSearchResult = await fetchAndDisplayResults(currentPage);
-    if (!currentSearchResult) return;
+      fetchedApiPage = apiPageNum;
+      return true;
+    }
+
+    const initialSuccess = await fetchApiPage(1);
+    if (!initialSuccess) {
+      await session.send(`未找到与“${query}”相关的漫画。`);
+      return;
+    }
+
+    let displayedResults: Partial<Gallery>[] = [];
+
     while (true) {
-      await session.send("回复序号下载，'F'翻页，'N'退出。");
+      const startIndex = (currentDisplayPage - 1) * limit;
+      const endIndex = startIndex + limit;
+
+      while (endIndex > allResults.length && fetchedApiPage < totalApiPages) {
+        await session.send(h('quote', {id: session.messageId}) + `正在加载更多结果 (第 ${fetchedApiPage + 1} / ${totalApiPages} API页)...`);
+        await fetchApiPage(fetchedApiPage + 1);
+      }
+
+      displayedResults = allResults.slice(startIndex, endIndex);
+
+      if (displayedResults.length === 0 && currentDisplayPage > 1) {
+        await session.send('没有更多结果了。');
+        currentDisplayPage--;
+        continue;
+      }
+
+      // [Bug修复] 始终为当前页(displayedResults)的结果获取封面
+      const covers = await this.nhentaiService.getCoversForGalleries(displayedResults);
+      
+      const messageNodes: h[] = [];
+      for (const [index, gallery] of displayedResults.entries()) {
+        const galleryInfoNode = this._formatGalleryInfo(gallery, index);
+        const cover = covers.get(gallery.id as string);
+        const messageNode = h('message', galleryInfoNode);
+        if (cover) {
+          messageNode.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)));
+        }
+        messageNodes.push(messageNode);
+      }
+
+      const totalDisplayPages = Math.ceil(totalResultsCount / limit);
+      const headerText = `共约 ${totalResultsCount} 个结果, 当前显示第 ${startIndex + 1}-${startIndex + displayedResults.length} 条 (第 ${currentDisplayPage} / ${totalDisplayPages} 页)`;
+      const header = h('message', h('p', headerText));
+      
+      if (this.config.useForwardForSearch && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform)) {
+        await session.send(h('figure', {}, [header, ...messageNodes]));
+      } else {
+        await session.send([header, ...messageNodes.flatMap(m => m.children)]);
+      }
+
+      const prompts = ["回复序号下载"];
+      if (currentDisplayPage > 1) prompts.push("'B'上一页");
+      if (currentDisplayPage < totalDisplayPages) prompts.push("'F'下一页");
+      prompts.push("'N'退出");
+      await session.send(prompts.join("，") + "。");
+
       const reply = await session.prompt(this.config.promptTimeout);
       if (!reply) {
         await session.send('操作超时，已自动取消。');
         break;
       }
+
       const lowerReply = reply.toLowerCase();
       if (lowerReply === 'n') {
         await session.send('操作已取消。');
         break;
       } else if (lowerReply === 'f') {
-        currentPage = (currentPage % totalPages) + 1;
-        currentSearchResult = await fetchAndDisplayResults(currentPage);
-        if (!currentSearchResult) break;
+        if (currentDisplayPage < totalDisplayPages) {
+          currentDisplayPage++;
+        } else {
+          await session.send('已经是最后一页了。');
+        }
+      } else if (lowerReply === 'b') {
+        if (currentDisplayPage > 1) {
+          currentDisplayPage--;
+        } else {
+          await session.send('已经是第一页了。');
+        }
       } else if (/^\d+$/.test(reply)) {
         const selectedIndex = parseInt(reply, 10) - 1;
-        const resultIndex = currentSearchResult.result.findIndex((_, i) => i + ((currentPage - 1) * limit) === selectedIndex);
-        if (resultIndex !== -1) {
-          const gallery = currentSearchResult.result[resultIndex];
-          if (gallery?.id) return session.execute(`nh download ${gallery.id}`);
+        if (selectedIndex >= 0 && selectedIndex < displayedResults.length) {
+          const gallery = displayedResults[selectedIndex];
+          if (gallery?.id) {
+            return session.execute(`nh download ${gallery.id}`);
+          }
         }
-        await session.send("无效的选择，请回复正确的序号、'F'或'N'。");
+        await session.send("无效的选择，请输入列表中的序号。");
       } else {
-        await session.send("无效的输入，请回复序号、'F'或'N'。");
+        await session.send("无效的输入，请重新操作。");
       }
     }
   }
 
   private async _handleRandomCommand(session: Session) {
-    let page: Page | null = null;
-    try {
-      page = await this.puppeteerManager.getPage();
-      await page.goto('https://nhentai.net/random', { waitUntil: 'domcontentloaded' });
-      const finalUrl = page.url();
-      const match = finalUrl.match(galleryUrlRegex);
-      if (!match || !match[1]) {
-        throw new Error('无法从重定向后的URL中解析画廊ID');
-      }
-      const randomId = match[1];
-      if (this.config.debug) logger.info(`[随机] 获取到随机画廊ID: ${randomId}`);
+    const randomId = await this.nhentaiService.getRandomGalleryId();
+    if (randomId) {
       await this._handleIdSearch(session, randomId);
-    } finally {
-      if (page) {
-        await this.puppeteerManager.releasePage(page);
-      }
+    } else {
+      throw new Error('获取随机画廊ID失败。');
     }
   }
 
-  private async _executeDownload(session: Session, id: string, options: DownloadOptions, statusMessageId: string) {
-    let tempPdfPath: string = '';
-    let pages: Page[] = [];
+  private async _handleDownloadCommand(session: Session, id: string, options: DownloadOptions, statusMessageId: string) {
+    let tempPdfPath: string | undefined;
+
     try {
-      const gallery = await this.getGallery(id);
-      if (!gallery) {
-        await session.send(`获取画廊 ${id} 信息失败，请检查ID或链接是否正确。`);
-        return;
-      }
-      const imageUrls = gallery.images.pages.map((p, i) => ({
-          url: `${IMAGE_BASE}/galleries/${gallery.media_id}/${i + 1}.${imageExtMap[p.t] || 'jpg'}`,
-          index: i
-      }));
+      let outputType: 'zip' | 'pdf' | 'img' = this.config.defaultOutput;
+      if (options.pdf) outputType = 'pdf';
+      else if (options.zip) outputType = 'zip';
+      else if (options.image) outputType = 'img';
+      const password = options.key || this.config.defaultPassword;
+
       const updateStatus = async (text: string) => {
         if (typeof session.bot.editMessage === 'function') {
           try { await session.bot.editMessage(session.channelId, statusMessageId, text); }
           catch (error) { if (this.config.debug) logger.warn('[下载] 编辑状态消息失败 (忽略): %o', error); }
         }
       };
-      await updateStatus(`画廊信息获取成功，共 ${imageUrls.length} 页图片。`);
-      pages = await Promise.all(Array.from({ length: this.config.downloadConcurrency }, () => this.puppeteerManager.getPage()));
-      const successfulDownloads: DownloadedImage[] = [];
-      const failedIndexes: number[] = [];
-      const imageQueue = [...imageUrls];
-      let processedCount = 0;
-      const worker = async (page: Page) => {
-        while (imageQueue.length > 0) {
-          const item = imageQueue.shift();
-          if (!item) continue;
-          const result = await this.processor.downloadImage(page, item.url, item.index, id);
-          processedCount++;
-          if ('buffer' in result) successfulDownloads.push(result);
-          else failedIndexes.push(item.index);
-          await updateStatus(`正在下载图片: ${processedCount} / ${imageUrls.length} ...`);
-        }
-      };
-      await Promise.all(pages.map(page => worker(page)));
-      successfulDownloads.sort((a, b) => a.index - b.index);
-      if(successfulDownloads.length === 0) {
-        await session.send('所有图片下载失败，无法生成文件。');
+
+      const result = await this.nhentaiService.downloadGallery(id, outputType, password, updateStatus);
+
+      if ('error' in result) {
+        await session.send(result.error);
         return;
       }
-      const safeFilename = (gallery.title?.pretty || gallery.title?.english || gallery.title?.japanese || 'untitled').replace(/[\\/:\*\?"<>\|]/g, '_');
-      let outputType: 'zip' | 'pdf' | 'img' = this.config.defaultOutput;
-      if (options.pdf) outputType = 'pdf';
-      else if (options.zip) outputType = 'zip';
-      else if (options.image) outputType = 'img';
-      const password = options.key || this.config.defaultPassword;
-      if (outputType === 'pdf') {
-        await updateStatus('所有图片下载完成，正在生成 PDF 文件...');
-        tempPdfPath = await this.processor.createPdf(successfulDownloads, id, updateStatus, password);
-        if (this.config.pdfSendMethod === 'buffer') {
-          const pdfBuffer = await readFile(tempPdfPath);
-          await session.send(h.file(pdfBuffer, 'application/pdf', { title: `${safeFilename}.pdf` }));
-        } else {
-          await session.send(h.file(pathToFileURL(tempPdfPath).href, { title: `${safeFilename}.pdf` }));
-        }
-      } else if (outputType === 'zip') {
-        await updateStatus('所有图片下载完成，正在生成 ZIP 压缩包...');
-        const zipBuffer = await this.processor.createZip(successfulDownloads, password);
-        await session.send(h.file(zipBuffer, 'application/zip', { title: `${safeFilename}.zip` }));
+
+      let successMessage = `任务完成: ${result.filename.split('.').slice(0,-1).join('.')}`;
+      if (['zip', 'pdf'].includes(result.type) && password) {
+        successMessage += `，密码为: ${password}`;
       }
-      let successMessage = `任务完成: ${safeFilename}`;
-      if (['zip', 'pdf'].includes(outputType) && password) {
-          successMessage += `，密码为: ${password}`;
-      }
-      if (outputType === 'img') {
-        const useForward = this.config.useForwardForDownload && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform);
-        const imageElements = await Promise.all(successfulDownloads.map(async item => {
-          const processedBuffer = await this.processor.applyAntiGzip(item.buffer, `${id}-page-${item.index + 1}`);
-          return { ...item, buffer: processedBuffer };
-        }));
-        if (useForward) {
-          await session.send(h('figure', {}, imageElements.map(item => h.image(bufferToDataURI(item.buffer, `image/${item.extension}`)))));
-        } else {
-          for (const { index, buffer, extension } of imageElements) {
-            await session.send(`正在发送图片: ${index + 1} / ${imageUrls.length}` + h.image(bufferToDataURI(buffer, `image/${extension}`)));
-            await sleep(this.config.imageSendDelay);
+
+      switch (result.type) {
+        case 'pdf':
+          tempPdfPath = result.path;
+          if (this.config.pdfSendMethod === 'buffer') {
+            const pdfBuffer = await readFile(tempPdfPath);
+            await session.send(h.file(pdfBuffer, 'application/pdf', { title: result.filename }));
+          } else {
+            await session.send(h.file(pathToFileURL(tempPdfPath).href, { title: result.filename }));
           }
-        }
+          break;
+
+        case 'zip':
+          await session.send(h.file(result.buffer, 'application/zip', { title: result.filename }));
+          break;
+
+        case 'images':
+          const useForward = this.config.useForwardForDownload && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform);
+          const imageElements = await Promise.all(result.images.map(async item => {
+            const processedBuffer = await this.processor.applyAntiGzip(item.buffer, `${id}-page-${item.index + 1}`);
+            return { ...item, buffer: processedBuffer };
+          }));
+
+          if (useForward) {
+            await session.send(h('figure', {}, imageElements.map(item => h.image(bufferToDataURI(item.buffer, `image/${item.extension}`)))));
+          } else {
+            for (const { index, buffer, extension } of imageElements) {
+              await session.send(`正在发送图片: ${index + 1} / ${result.images.length + result.failedIndexes.length}` + h.image(bufferToDataURI(buffer, `image/${extension}`)));
+              await sleep(this.config.imageSendDelay);
+            }
+          }
+          
+          if (result.failedIndexes.length > 0) {
+            const failedPages = result.failedIndexes.map(i => i + 1).join(', ');
+            await session.send(`有 ${result.failedIndexes.length} 张图片下载失败，页码为: ${failedPages}。`);
+          }
+          break;
       }
       await session.send(successMessage);
-      if (failedIndexes.length > 0) {
-        const failedPages = failedIndexes.map(i => i + 1).join(', ');
-        await session.send(`有 ${failedIndexes.length} 张图片下载失败，页码为: ${failedPages}。`);
-      }
     } finally {
       if (tempPdfPath) try { await rm(tempPdfPath, { force: true }); } catch(e) {}
-      for (const page of pages) {
-        await this.puppeteerManager.releasePage(page);
-      }
     }
   }
 }
