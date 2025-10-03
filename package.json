@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-nhentai-downloader",
-  "description": "nhentai 漫画下载插件，支持搜索、下载并打包发送。",
-  "version": "1.0.1",
+  "description": "nhentai 漫画插件，提供搜索、下载并打包发送漫画作品的功能。",
+  "version": "1.1.0",
   "homepage": "https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader",
   "repository": {
     "type": "git",
@@ -13,9 +13,6 @@
     "lib"
   ],
   "license": "MIT",
-  "scripts": {
-    "build": "tsc"
-  },
   "keywords": [
     "chatbot",
     "koishi",
