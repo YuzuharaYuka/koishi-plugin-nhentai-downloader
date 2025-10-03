@@ -84,7 +84,7 @@ export class Processor {
       for (let i = 0; i <= retries; i++) {
         try {
           if (tryIndex > 0 && this.config.debug) {
-            logger.info(`[下载] 正在回退尝试: ${currentUrl}`);
+            logger.info(`正在回退尝试: ${currentUrl}`);
           }
           await page.setExtraHTTPHeaders({ 'Referer': `https://nhentai.net/g/${gid}/` });
           
@@ -103,25 +103,25 @@ export class Processor {
 
             const buffer = await response.buffer();
             const finalExt = path.extname(currentUrl).slice(1);
-            if (this.config.debug) logger.info(`[下载] 图片 ${index + 1} (${currentUrl}) 下载成功。`);
+            if (this.config.debug) logger.info(`图片 ${index + 1} (${currentUrl}) 下载成功。`);
             return { index, buffer, extension: finalExt };
           }
 
           if (response.status() === 404) {
-             if (this.config.debug) logger.warn(`[下载] URL ${currentUrl} 返回 404，尝试下一种格式...`);
+             if (this.config.debug) logger.warn(`URL ${currentUrl} 返回 404，尝试下一种格式...`);
              break;
           }
           throw new Error(`请求失败，状态码: ${response.status()}`);
         } catch (error) {
           if (this.config.debug) {
-            logger.warn(`[下载] 图片 ${index + 1} (${currentUrl}) 下载失败: ${error.message}`);
+            logger.warn(`图片 ${index + 1} (${currentUrl}) 下载失败: ${error.message}`);
           }
           if (i < retries) {
-            if (this.config.debug) logger.warn(`[下载] (第 ${i + 1} 次重试), ${this.config.downloadRetryDelay}ms 后进行...`);
+            if (this.config.debug) logger.warn(`${currentUrl} (第 ${i + 1} 次重试), ${this.config.downloadRetryDelay}ms 后进行...`);
             await sleep(this.config.downloadRetryDelay);
           } else {
             if (tryIndex < urlsToTry.length - 1) break;
-            logger.error(`[下载] 图片 ${index + 1} (${url}) 在所有尝试后最终失败。`);
+            logger.error(`图片 ${index + 1} (${url}) 在所有尝试后最终失败。`);
             return { index, error };
           }
         }
@@ -173,7 +173,7 @@ export class Processor {
     try {
       const recipe = new Recipe("new", tempPdfPath);
       for (const { index, buffer } of images) {
-        onProgress(`⚙️ 正在处理第 ${index + 1} / ${images.length} 张图片...`);
+        onProgress(`正在处理第 ${index + 1} / ${images.length} 张图片...`);
         const imagePath = path.resolve(tempDir, `${index}.jpg`);
         try {
           const sharpInstance = sharp(buffer);
@@ -191,7 +191,7 @@ export class Processor {
 
         } catch (imgError) {
           logger.warn('[Processor] PDF生成失败，已跳过图片 %d: %s', index + 1, imgError.message);
-          onProgress(`❌ 处理第 ${index + 1} / ${images.length} 张图片失败，已跳过。`);
+          onProgress(`处理第 ${index + 1} / ${images.length} 张图片失败，已跳过。`);
         }
       }
 

@@ -17,29 +17,29 @@ export class PuppeteerManager {
 
     public async initialize(): Promise<void> {
         if (!this.config.puppeteer.persistentBrowser) return;
-        logger.info('[Stealth] 正在预初始化常驻浏览器实例...');
+        logger.info('正在预初始化常驻浏览器实例...');
         try {
             await this.getBrowser();
-            logger.info('[Stealth] 常驻浏览器实例已成功预初始化。');
+            logger.info('常驻浏览器实例已成功预初始化。');
         } catch (error) {
-            logger.error('[Stealth] 预初始化常驻浏览器实例失败:', error);
+            logger.error('预初始化常驻浏览器实例失败:', error);
         }
     }
 
     private async getBrowserPath(): Promise<string> {
         const customPath = this.config.puppeteer.chromeExecutablePath;
         if (customPath) {
-            if (this.config.debug) logger.info(`[Stealth] 使用用户配置的浏览器路径: ${customPath}`);
+            if (this.config.debug) logger.info(`使用用户配置的浏览器路径: ${customPath}`);
             return customPath;
         }
         
         try {
-            if (this.config.debug) logger.info('[Stealth] 正在使用 puppeteer-finder 自动检测浏览器...');
+            if (this.config.debug) logger.info('正在使用 puppeteer-finder 自动检测浏览器...');
             const browserPath = await find();
-            logger.info(`[Stealth] 自动检测到浏览器路径: ${browserPath}`);
+            logger.info(`自动检测到浏览器路径: ${browserPath}`);
             return browserPath;
         } catch (error) {
-            logger.warn('[Stealth] puppeteer-finder 未能找到任何浏览器。');
+            logger.warn('puppeteer-finder 未能找到任何浏览器。');
             throw new Error('未能找到任何兼容的浏览器。请在插件的浏览器设置中手动指定路径，或确保已安装 Chrome/Chromium。');
         }
     }
@@ -57,7 +57,7 @@ export class PuppeteerManager {
         });
 
         browser.on('disconnected', () => {
-            logger.warn('[Stealth] 共享浏览器实例已断开连接。');
+            logger.warn('共享浏览器实例已断开连接。');
             this._browserPromise = null;
         });
         return browser;
@@ -111,7 +111,7 @@ export class PuppeteerManager {
             try {
                 await page.close();
             } catch (error) {
-                logger.warn('[Stealth] 关闭页面时发生错误:', error);
+                logger.warn('关闭页面时发生错误:', error);
             }
         }
         // 如果不是常驻模式，每次关闭页面后都检查是否可以关闭整个浏览器
@@ -133,7 +133,7 @@ export class PuppeteerManager {
                     await browser.close();
                 }
             } catch (error) {
-                logger.warn('[Stealth] 关闭浏览器实例时发生错误:', error);
+                logger.warn('关闭浏览器实例时发生错误:', error);
             }
             this._browserPromise = null;
         }
