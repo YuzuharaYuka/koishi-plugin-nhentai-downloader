@@ -50,6 +50,11 @@ interface DownloadOptions {
   key?: string;
 }
 
+interface SearchOptions {
+  sort?: 'popular' | 'popular-today' | 'popular-week';
+  lang?: 'chinese' | 'japanese' | 'english' | 'all';
+}
+
 const tagTypeDisplayMap: Record<Tag['type'], string> = {
   parody: '🎭 原作',
   character: '👥 角色',
@@ -103,20 +108,42 @@ class NhentaiPlugin {
 
     nhCmd.subcommand('.search <query:text>', '搜索漫画或根据ID获取漫画信息')
       .alias('搜索', 'search', 'nh搜索')
+      .option('sort', '-s <sort:string> 按热门排序 (可选值: popular, popular-today, popular-week)')
+      .option('lang', '-l <lang:string> 指定语言 (可选值: chinese, japanese, english, all)')
       .usage(
         '当输入为漫画ID时，将获取该漫画的详细信息，并提示是否下载。\n' +
         '当输入为关键词时，将搜索相关漫画，并支持分页浏览与互动式下载。'
       )
       .example('nh search touhou - 搜索关键词为 "touhou" 的漫画')
       .example('nh search 177013 - 获取 ID 为 177013 的漫画信息')
-      .action(async ({ session }, query) => {
+      .example('nh search touhou -s popular - 按热门度搜索 "touhou"')
+      .example('nh search touhou -l chinese - 限定中文结果搜索 "touhou"')
+      .action(async ({ session, options }, query) => {
         if (!query) return session.send('请输入搜索关键词或漫画ID。');
+        
+        // [修正] 在这里对 options 进行校验和类型转换
+        const validSorts = ['popular', 'popular-today', 'popular-week'];
+        const validLangs = ['chinese', 'japanese', 'english', 'all'];
+
+        if (options.sort && !validSorts.includes(options.sort)) {
+          return session.send(`无效的排序选项。可用值: ${validSorts.join(', ')}`);
+        }
+        if (options.lang && !validLangs.includes(options.lang)) {
+          return session.send(`无效的语言选项。可用值: ${validLangs.join(', ')}`);
+        }
+        
+        // 将经过校验的 options 断言为正确的类型
+        const searchOptions: SearchOptions = {
+          sort: options.sort as SearchOptions['sort'],
+          lang: options.lang as SearchOptions['lang'],
+        };
+        
         const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + `正在搜索 ${query}...`);
         try {
           if (/^\d+$/.test(query)) {
             await this._handleIdSearch(session, query);
           } else {
-            await this._handleKeywordSearch(session, query);
+            await this._handleKeywordSearch(session, query, searchOptions);
           }
         } catch (error) {
           logger.error(`[搜索] 命令执行失败: %o`, error);
@@ -167,17 +194,10 @@ class NhentaiPlugin {
       
     nhCmd.subcommand('.popular', '查看当前的热门漫画')
       .alias('热门', 'popular', 'nh热门')
-      .usage('...')
+      .usage('获取 nhentai 当前的热门漫画列表，支持翻页和交互式下载。')
+      .example('nh popular')
       .action(async ({ session }) => {
-        const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + '正在获取热门漫画...');
-        try {
-          await this._handleKeywordSearch(session, 'popular', 'popular');
-        } catch (error) {
-          logger.error(`[热门] 命令执行失败: %o`, error);
-          await session.send(`指令执行失败: ${error.message}`);
-        } finally {
-          try { await session.bot.deleteMessage(session.channelId, statusMessageId); } catch (e) {}
-        }
+        return session.execute('nh search "" --sort popular');
       });
   }
 
@@ -258,19 +278,44 @@ class NhentaiPlugin {
     }
   }
   
-  private async _handleKeywordSearch(session: Session, query: string, sort?: string) {
+  private async _handleKeywordSearch(session: Session, query: string, options: SearchOptions) {
     const limit = this.config.searchResultLimit > 0 ? this.config.searchResultLimit : 10;
+    const sort = options.sort;
+    const lang = options.lang || this.config.defaultSearchLanguage;
     
     let allResults: Partial<Gallery>[] = [];
     let totalApiPages = 0;
     let fetchedApiPage = 0;
     let currentDisplayPage = 1;
     let totalResultsCount = 0;
+    let attemptedFallback = false;
+
+    const buildQuery = (currentQuery: string, currentLang: string) => {
+      let finalQuery = currentQuery.trim();
+      if (currentLang && currentLang !== 'all' && !finalQuery.includes('language:')) {
+        finalQuery += ` language:${currentLang}`;
+      }
+      return finalQuery;
+    };
+    
+    let effectiveQuery = buildQuery(query, lang);
 
     const fetchApiPage = async (apiPageNum: number) => {
-      const result = await this.apiService.searchGalleries(query, apiPageNum, sort);
+      const result = await this.apiService.searchGalleries(effectiveQuery, apiPageNum, sort);
+      
+      if ((!result || result.result.length === 0) && lang !== 'all' && !attemptedFallback) {
+        attemptedFallback = true;
+        await session.send(`在 ${lang} 语言下未找到结果，正在尝试搜索所有语言...`);
+        effectiveQuery = buildQuery(query, 'all');
+        return await fetchApiPage(1);
+      }
+      
       if (!result || result.result.length === 0) return false;
       
+      if (attemptedFallback && apiPageNum === 1) {
+        allResults = [];
+      }
+
       allResults.push(...result.result);
       if (apiPageNum === 1) {
         totalApiPages = result.num_pages;
@@ -305,7 +350,6 @@ class NhentaiPlugin {
         continue;
       }
 
-      // [Bug修复] 始终为当前页(displayedResults)的结果获取封面
       const covers = await this.nhentaiService.getCoversForGalleries(displayedResults);
       
       const messageNodes: h[] = [];
