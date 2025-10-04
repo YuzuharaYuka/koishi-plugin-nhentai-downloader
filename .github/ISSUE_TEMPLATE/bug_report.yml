@@ -22,7 +22,7 @@ body:
     attributes:
       label: 插件版本
       description: '您可以在 Koishi 控制台的插件市场中查看 `nhentai-downloader` 的版本号。'
-      placeholder: 
+      placeholder: ''
     validations:
       required: true
 
@@ -31,7 +31,7 @@ body:
     attributes:
       label: Koishi 版本
       description: '您可以在 Koishi 控制台的仪表盘页面左下角找到。'
-      placeholder: 
+      placeholder: '' 
     validations:
       required: true
 
@@ -70,7 +70,7 @@ body:
     attributes:
       label: 复现步骤
       description: 请清晰地描述您是如何触发这个问题的。如果您修改了默认配置，也请一并说明。
-      placeholder: |
+      placeholder: ''
       render: markdown
     validations:
       required: true
@@ -80,7 +80,7 @@ body:
     attributes:
       label: 相关日志与截图
       description: 请将 Koishi 控制台中与错误相关的 **完整日志** 粘贴在此处。如果有截图，也请一并附上。这对于定位问题至关重要。
-      placeholder: 
+      placeholder: ''
       render: markdown
     validations:
       required: true
