@@ -1,0 +1,93 @@
+name: Bug Report
+description: 报告插件运行中遇到的问题。
+title: '[Bug] '
+labels: ['bug']
+
+body:
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 核对清单
+      description: 在提交前，请确保您已完成以下检查。
+      options:
+        - label: 我已在 [Issues 列表](https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/issues) 中搜索，确认了没有重复的问题。
+          required: true
+        - label: 我正在使用插件的最新版本。
+          required: true
+        - label: 我已检查并确认这不是由我的 Koishi 配置或网络环境（如无法访问 nhentai.net）引起的问题。
+          required: true
+
+  - type: input
+    id: plugin_version
+    attributes:
+      label: 插件版本
+      description: '您可以在 Koishi 控制台的插件市场中查看 `nhentai-downloader` 的版本号。'
+      placeholder: 
+    validations:
+      required: true
+
+  - type: input
+    id: koishi_version
+    attributes:
+      label: Koishi 版本
+      description: '您可以在 Koishi 控制台的仪表盘页面左下角找到。'
+      placeholder: 
+    validations:
+      required: true
+
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: 发生问题的适配器平台
+      description: '问题主要出现在哪个聊天平台？'
+      options:
+        - OneBot (QQ)
+        - Discord
+        - Telegram
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: problem_command
+    attributes:
+      label: 哪个指令或功能出现了问题？
+      description: '请选择与问题最相关的部分。'
+      multiple: true
+      options:
+        - nh.search (搜索)
+        - nh.download (下载)
+        - nh.popular (热门)
+        - nh.random (随机)
+        - 链接自动识别
+        - 文件输出 (PDF/ZIP/图片)
+        - 插件配置/加载
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请清晰地描述您是如何触发这个问题的。如果您修改了默认配置，也请一并说明。
+      placeholder: |
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志与截图
+      description: 请将 Koishi 控制台中与错误相关的 **完整日志** 粘贴在此处。如果有截图，也请一并附上。这对于定位问题至关重要。
+      placeholder: 
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_info
+    attributes:
+      label: 补充信息
+      description: '还有其他有助于我们理解问题背景的信息吗？例如，您的操作系统、Node.js 版本等。'
+      render: markdown
