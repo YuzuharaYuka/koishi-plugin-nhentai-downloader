@@ -1,9 +1,12 @@
 // src/constants.ts
 
-// [修改] 恢复所有 URL 为固定的官方源
+// [OPTIMIZE] 根据用户测试结果，更新为准确可用的 CDN 域名列表
 export const API_BASE = 'https://nhentai.net/api';
-export const IMAGE_BASE = 'https://i.nhentai.net';
-export const THUMB_BASE = 'https://t.nhentai.net';
+export const IMAGE_HOST_PRIMARY = 'i.nhentai.net';
+export const IMAGE_HOST_FALLBACK = ['i2.nhentai.net', 'i3.nhentai.net', 'i4.nhentai.net'];
+export const THUMB_HOST_PRIMARY = 't.nhentai.net';
+export const THUMB_HOST_FALLBACK = ['t2.nhentai.net', 't3.nhentai.net', 't4.nhentai.net'];
+
 
 // 链接识别仍然可以支持多个域名
 export const NHENTAI_HOSTS = ['nhentai.net', 'nhentai.to'];
