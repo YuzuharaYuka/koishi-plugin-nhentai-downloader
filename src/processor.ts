@@ -1,3 +1,5 @@
+// --- START OF FILE src/processor.ts ---
+
 // src/processor.ts
 import { Context } from 'koishi'
 import { Config } from './config'
@@ -8,7 +10,7 @@ import * as path from 'path'
 import { Recipe } from 'muhammara'
 import archiver from 'archiver'
 import sharp from 'sharp'
-import type { Page } from 'puppeteer-core'
+import type { GotScraping } from 'got-scraping'
 
 if (!archiver.isRegisteredFormat('zip-encrypted')) {
   archiver.registerFormat('zip-encrypted', require('archiver-zip-encrypted'));
@@ -75,7 +77,7 @@ export class Processor {
     }
   }
 
-  async downloadImage(page: Page, url: string, index: number, gid: string, retries = this.config.downloadRetries): Promise<DownloadedImage | { index: number; error: Error }> {
+  async downloadImage(got: GotScraping, url: string, index: number, gid: string, retries = this.config.downloadRetries): Promise<DownloadedImage | { index: number; error: Error }> {
     const originalExt = path.extname(url).slice(1);
     const fallbackExts = ['jpg', 'png'].filter(ext => ext !== originalExt);
     const urlsToTry = [url, ...fallbackExts.map(ext => url.replace(`.${originalExt}`, `.${ext}`))]
@@ -86,51 +88,55 @@ export class Processor {
           if (tryIndex > 0 && this.config.debug) {
             logger.info(`正在回退尝试: ${currentUrl}`);
           }
-          await page.setExtraHTTPHeaders({ 'Referer': `https://nhentai.net/g/${gid}/` });
           
-          const response = await page.goto(currentUrl, { 
-            timeout: this.config.downloadTimeout, 
-            waitUntil: 'domcontentloaded' 
+          const response = await got.get(currentUrl, {
+            headers: { 'Referer': `https://nhentai.net/g/${gid}/` },
+            timeout: { request: this.config.downloadTimeout },
+            retry: { limit: 0 },
+            throwHttpErrors: false,
           });
           
-          if (response.ok()) {
-            const headers = response.headers();
-            const contentType = headers['content-type'];
-
-            if (!contentType || !contentType.startsWith('image/')) {
-              throw new Error(`下载的内容不是有效的图片 (Content-Type: ${contentType || 'N/A'})`);
-            }
-
-            const buffer = await response.buffer();
-            const finalExt = path.extname(currentUrl).slice(1);
-            if (this.config.debug) logger.info(`图片 ${index + 1} (${currentUrl}) 下载成功。`);
-            return { index, buffer, extension: finalExt };
+          if (response.statusCode === 404) {
+            if (this.config.debug) logger.warn(`URL ${currentUrl} 返回 404，立即尝试下一种格式...`);
+            break;
           }
 
-          if (response.status() === 404) {
-             if (this.config.debug) logger.warn(`URL ${currentUrl} 返回 404，尝试下一种格式...`);
-             break;
+          const contentType = response.headers['content-type'];
+          if (!contentType || !contentType.startsWith('image/')) {
+            if (this.config.debug) logger.warn(`URL ${currentUrl} 返回的不是图片 (Content-Type: ${contentType || 'N/A'})，立即尝试下一种格式...`);
+            break; 
           }
-          throw new Error(`请求失败，状态码: ${response.status()}`);
+
+          if (response.statusCode >= 400) {
+            throw new Error(`请求失败，状态码: ${response.statusCode}`);
+          }
+
+          const buffer = response.rawBody;
+          const finalExt = path.extname(currentUrl).slice(1);
+          if (this.config.debug) logger.info(`图片 ${index + 1} (${currentUrl}) 下载成功。`);
+          return { index, buffer, extension: finalExt };
+
         } catch (error) {
           if (this.config.debug) {
             logger.warn(`图片 ${index + 1} (${currentUrl}) 下载失败: ${error.message}`);
           }
+          
           if (i < retries) {
             if (this.config.debug) logger.warn(`${currentUrl} (第 ${i + 1} 次重试), ${this.config.downloadRetryDelay}ms 后进行...`);
             await sleep(this.config.downloadRetryDelay);
           } else {
-            if (tryIndex < urlsToTry.length - 1) break;
-            logger.error(`图片 ${index + 1} (${url}) 在所有尝试后最终失败。`);
-            return { index, error };
+            if (tryIndex >= urlsToTry.length - 1) {
+              logger.error(`图片 ${index + 1} (${url}) 在所有尝试后最终失败。`);
+              return { index, error };
+            }
           }
         }
       }
     }
-    return { index, error: new Error(`所有图片格式均返回 404`) };
+    return { index, error: new Error(`所有图片格式均返回 404 或下载失败`) };
   }
   
-  async createZip(images: DownloadedImage[], password?: string): Promise<Buffer> {
+  async createZip(imageStream: AsyncIterable<DownloadedImage>, password?: string): Promise<Buffer> {
     const isEncrypted = password && password.length > 0;
     const format = isEncrypted ? 'zip-encrypted' : 'zip';
     
@@ -143,7 +149,6 @@ export class Processor {
       archiveOptions.password = password;
     }
 
-    // [最终修正] 对 format 变量本身进行类型断言，以解决编译时类型检查问题
     const zip = archiver(format as archiver.Format, archiveOptions);
     
     const stream = new PassThrough();
@@ -156,15 +161,17 @@ export class Processor {
     });
     
     zip.pipe(stream);
-    for (const { index, buffer, extension } of images) {
+    
+    for await (const { index, buffer, extension } of imageStream) {
       const pageNum = (index + 1).toString().padStart(3, '0');
       zip.append(buffer, { name: `${pageNum}.${extension}` });
     }
+
     await zip.finalize();
     return archivePromise;
   }
 
-  async createPdf(images: DownloadedImage[], galleryId: string, onProgress: (p: string) => void, password?: string): Promise<string> {
+  async createPdf(imageStream: AsyncIterable<DownloadedImage>, galleryId: string, onProgress: (p: string) => void, password?: string): Promise<string> {
     const downloadDir = path.resolve(this.ctx.app.baseDir, this.config.downloadPath);
     const tempDir = path.resolve(downloadDir, `temp_pdf_${galleryId}_${Date.now()}`);
     const tempPdfPath = path.resolve(downloadDir, `temp_${galleryId}_${Date.now()}.pdf`);
@@ -172,17 +179,30 @@ export class Processor {
     
     try {
       const recipe = new Recipe("new", tempPdfPath);
-      for (const { index, buffer } of images) {
-        onProgress(`正在处理第 ${index + 1} / ${images.length} 张图片...`);
+      let pageCount = 0;
+      const recompressionThreshold = (this.config.pdfJpegRecompressionSize || 500) * 1024;
+
+      for await (const { index, buffer } of imageStream) {
+        pageCount++;
+        onProgress(`正在处理第 ${pageCount} 张图片并写入PDF...`);
         const imagePath = path.resolve(tempDir, `${index}.jpg`);
         try {
           const sharpInstance = sharp(buffer);
           const metadata = await sharpInstance.metadata();
           
           let imageToWrite = buffer;
-          if (this.config.pdfEnableCompression || metadata.format !== 'jpeg') {
-            imageToWrite = await sharpInstance.jpeg({ quality: this.config.pdfCompressionQuality }).toBuffer();
+          if (this.config.pdfEnableCompression) {
+            // Smart Compression Logic
+            if (metadata.format === 'jpeg' && recompressionThreshold > 0 && metadata.size < recompressionThreshold) {
+              if (this.config.debug) logger.info(`[Processor][PDF] 图片 ${index + 1} 是小于 ${this.config.pdfJpegRecompressionSize}KB 的JPEG，跳过二次压缩。`);
+            } else {
+              imageToWrite = await sharpInstance.jpeg({ quality: this.config.pdfCompressionQuality }).toBuffer();
+            }
+          } else if (metadata.format !== 'jpeg') {
+            // Convert to JPEG if not compressed, as PDF recipe needs it
+            imageToWrite = await sharpInstance.jpeg({ quality: 100 }).toBuffer();
           }
+          
           await writeFile(imagePath, imageToWrite);
           
           recipe.createPage(metadata.width, metadata.height)
@@ -191,8 +211,12 @@ export class Processor {
 
         } catch (imgError) {
           logger.warn('[Processor] PDF生成失败，已跳过图片 %d: %s', index + 1, imgError.message);
-          onProgress(`处理第 ${index + 1} / ${images.length} 张图片失败，已跳过。`);
+          onProgress(`处理第 ${pageCount} 张图片失败，已跳过。`);
         }
+      }
+
+      if (pageCount === 0) {
+        throw new Error("没有成功处理任何图片，无法生成PDF。");
       }
 
       if (password) recipe.encrypt({ userPassword: password, ownerPassword: password });
@@ -205,3 +229,4 @@ export class Processor {
     }
   }
 }
+// --- END OF FILE src/processor.ts ---

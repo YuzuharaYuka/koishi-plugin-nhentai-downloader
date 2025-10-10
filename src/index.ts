@@ -3,7 +3,6 @@ import { Context, h, Session } from 'koishi'
 import { Config } from './config'
 import { logger, bufferToDataURI, sleep } from './utils'
 import { Processor } from './processor'
-import { PuppeteerManager } from './puppeteer'
 import { readFile, rm } from 'fs/promises'
 import { pathToFileURL } from 'url'
 import { ApiService, Gallery, SearchResult, galleryUrlRegex, Tag } from './services/api'
@@ -97,7 +96,6 @@ const tagTypeDisplayMap: Record<Tag['type'], string> = {
 };
 
 class NhentaiPlugin {
-  private puppeteerManager: PuppeteerManager;
   private processor: Processor;
   private apiService: ApiService;
   private nhentaiService: NhentaiService;
@@ -108,13 +106,10 @@ class NhentaiPlugin {
     }
     this.apiService = new ApiService(ctx, config);
     this.processor = new Processor(ctx, config);
-    this.puppeteerManager = new PuppeteerManager(ctx, config);
-    this.nhentaiService = new NhentaiService(config, this.apiService, this.processor, this.puppeteerManager);
+    this.nhentaiService = new NhentaiService(config, this.apiService, this.processor);
   }
 
   public start() {
-    this.ctx.on('ready', () => this.puppeteerManager.initialize());
-    this.ctx.on('dispose', () => this.puppeteerManager.dispose());
     this.registerMiddleware();
     this.registerCommands();
   }
@@ -234,7 +229,7 @@ class NhentaiPlugin {
       .usage('获取 nhentai 当前的热门漫画列表。此指令为 `nh.search \"\" -s popular` 的快捷方式。')
       .example('nh.popular  # 查看热门漫画列表')
       .action(async ({ session }) => {
-        return session.execute('nh.search "" --sort popular');
+        return session.execute('nh.search -s popular ""');
       });
   }
 
@@ -304,7 +299,7 @@ class NhentaiPlugin {
       await session.send(message);
     }
 
-    await session.send(`是否下载 ID ${id} 的漫画? (Y/N)`);
+    await session.send(`是否下载 ID ${id} 的漫画? [Y/N]`);
     const reply = await session.prompt(this.config.promptTimeout);
     if (!reply) {
       await session.send('操作超时，已自动取消。');
@@ -314,58 +309,78 @@ class NhentaiPlugin {
       await session.send('操作已取消。');
     }
   }
-  
+
+  // [REFACTOR] New helper to build a prioritized list of search queries
+  private _buildSearchQueryQueue(query: string, lang: SearchOptions['lang']): { query: string, message: string }[] {
+    const baseQuery = query.trim();
+    
+    const buildQuery = (langFilter: string) => {
+      // Avoid adding duplicate filters if user already specified them
+      if (baseQuery.includes('language:') || baseQuery.includes('汉化')) {
+        return baseQuery;
+      }
+      return `${baseQuery} ${langFilter}`.trim();
+    }
+    
+    if (lang === 'chinese') {
+      return [
+        { query: buildQuery('language:chinese'), message: `正在尝试使用 \`language:chinese\`...` },
+        { query: buildQuery('-language:english -language:japanese'), message: `正在尝试排除其他语言...` },
+        { query: buildQuery('汉化'), message: `正在尝试使用关键词 \`汉化\`...` },
+        { query: baseQuery, message: `正在尝试搜索所有语言...` }
+      ];
+    }
+    
+    let effectiveQuery = baseQuery;
+    if (lang && lang !== 'all' && !baseQuery.includes('language:')) {
+      effectiveQuery = `${baseQuery} language:${lang}`.trim();
+    }
+    
+    return [{ query: effectiveQuery, message: '' }];
+  }
+
   private async _handleKeywordSearch(session: Session, query: string, options: SearchOptions) {
     const limit = this.config.searchResultLimit > 0 ? this.config.searchResultLimit : 10;
     const sort = options.sort;
     const lang = options.lang || this.config.defaultSearchLanguage;
     
-    let allResults: Partial<Gallery>[] = [];
-    let totalApiPages = 0;
-    let fetchedApiPage = 0;
-    let currentDisplayPage = 1;
-    let totalResultsCount = 0;
-    let attemptedFallback = false;
-
-    const buildQuery = (currentQuery: string, currentLang: string) => {
-      let finalQuery = currentQuery.trim();
-      if (currentLang && currentLang !== 'all' && !finalQuery.includes('language:')) {
-        finalQuery += ` language:${currentLang}`;
-      }
-      return finalQuery;
-    };
+    const queryQueue = this._buildSearchQueryQueue(query, lang);
+    let effectiveQuery = '';
+    let initialResult: SearchResult | null = null;
     
-    let effectiveQuery = buildQuery(query, lang);
+    // [REFACTOR] Iterate through the query queue to find results
+    for (const { query: currentQuery, message } of queryQueue) {
+      effectiveQuery = currentQuery;
+      if (message) {
+        await session.send(message);
+      }
+      const result = await this.apiService.searchGalleries(effectiveQuery, 1, sort);
+      if (result && result.result.length > 0) {
+        initialResult = result;
+        break; // Found results, break the loop
+      }
+    }
+    
+    if (!initialResult) {
+      await session.send(`未找到与“${query}”相关的漫画。`);
+      return;
+    }
+    
+    let allResults: Partial<Gallery>[] = initialResult.result;
+    let totalApiPages = initialResult.num_pages;
+    let totalResultsCount = initialResult.num_pages * initialResult.per_page;
+    let fetchedApiPage = 1;
+    let currentDisplayPage = 1;
 
     const fetchApiPage = async (apiPageNum: number) => {
       const result = await this.apiService.searchGalleries(effectiveQuery, apiPageNum, sort);
-      
-      if ((!result || result.result.length === 0) && lang !== 'all' && !attemptedFallback) {
-        attemptedFallback = true;
-        await session.send(`在 ${lang} 语言下未找到结果，正在尝试搜索所有语言...`);
-        effectiveQuery = buildQuery(query, 'all');
-        return await fetchApiPage(1);
-      }
-      
       if (!result || result.result.length === 0) return false;
       
-      if (attemptedFallback && apiPageNum === 1) {
-        allResults = [];
-      }
-
       allResults.push(...result.result);
-      if (apiPageNum === 1) {
-        totalApiPages = result.num_pages;
-        totalResultsCount = result.num_pages * result.per_page;
-      }
+      // API might return slightly different total pages on subsequent requests, update if needed
+      if (result.num_pages > totalApiPages) totalApiPages = result.num_pages;
       fetchedApiPage = apiPageNum;
       return true;
-    }
-
-    const initialSuccess = await fetchApiPage(1);
-    if (!initialSuccess) {
-      await session.send(`未找到与“${query}”相关的漫画。`);
-      return;
     }
 
     let displayedResults: Partial<Gallery>[] = [];
@@ -386,6 +401,12 @@ class NhentaiPlugin {
         currentDisplayPage--;
         continue;
       }
+      
+      if (displayedResults.length === 0 && currentDisplayPage === 1) {
+        // This should not happen if initialResult was successful, but as a safeguard.
+        await session.send(`未找到与“${query}”相关的漫画。`);
+        return;
+      }
 
       const covers = await this.nhentaiService.getCoversForGalleries(displayedResults);
       
@@ -399,8 +420,10 @@ class NhentaiPlugin {
         }
         messageNodes.push(messageNode);
       }
-
-      const totalDisplayPages = Math.ceil(totalResultsCount / limit);
+      
+      // Recalculate total display pages based on actual results count if it's more accurate
+      const dynamicTotalResults = allResults.length < totalResultsCount ? allResults.length : totalResultsCount;
+      const totalDisplayPages = Math.ceil(dynamicTotalResults / limit);
       const headerText = `共约 ${totalResultsCount} 个结果, 当前显示第 ${startIndex + 1}-${startIndex + displayedResults.length} 条 (第 ${currentDisplayPage} / ${totalDisplayPages} 页)`;
       const header = h('message', h('p', headerText));
       
@@ -411,9 +434,9 @@ class NhentaiPlugin {
       }
 
       const prompts = ["回复序号下载"];
-      if (currentDisplayPage > 1) prompts.push("'B'上一页");
-      if (currentDisplayPage < totalDisplayPages) prompts.push("'F'下一页");
-      prompts.push("'N'退出");
+      if (currentDisplayPage > 1) prompts.push("[B]上一页");
+      if (currentDisplayPage < totalDisplayPages && endIndex < dynamicTotalResults) prompts.push("[F]下一页");
+      prompts.push("[N]退出");
       await session.send(prompts.join("，") + "。");
 
       const reply = await session.prompt(this.config.promptTimeout);
@@ -427,7 +450,7 @@ class NhentaiPlugin {
         await session.send('操作已取消。');
         break;
       } else if (lowerReply === 'f') {
-        if (currentDisplayPage < totalDisplayPages) {
+        if (currentDisplayPage < totalDisplayPages && endIndex < dynamicTotalResults) {
           currentDisplayPage++;
         } else {
           await session.send('已经是最后一页了。');
@@ -508,10 +531,7 @@ class NhentaiPlugin {
 
         case 'images':
           const useForward = this.config.useForwardForDownload && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform);
-          const imageElements = await Promise.all(result.images.map(async item => {
-            const processedBuffer = await this.processor.applyAntiGzip(item.buffer, `${id}-page-${item.index + 1}`);
-            return { ...item, buffer: processedBuffer };
-          }));
+          const imageElements = result.images; // Anti-gzip is already applied
 
           if (useForward) {
             await session.send(h('figure', {}, imageElements.map(item => h.image(bufferToDataURI(item.buffer, `image/${item.extension}`)))));
