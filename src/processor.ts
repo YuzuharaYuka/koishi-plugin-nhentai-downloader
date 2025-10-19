@@ -1,5 +1,3 @@
-// --- START OF FILE src/processor.ts ---
-
 // src/processor.ts
 import { Context } from 'koishi'
 import { Config } from './config'
@@ -77,65 +75,103 @@ export class Processor {
     }
   }
 
-  async downloadImage(got: GotScraping, url: string, index: number, gid: string, retries = this.config.downloadRetries): Promise<DownloadedImage | { index: number; error: Error }> {
-    const originalExt = path.extname(url).slice(1);
-    const fallbackExts = ['jpg', 'png'].filter(ext => ext !== originalExt);
-    const urlsToTry = [url, ...fallbackExts.map(ext => url.replace(`.${originalExt}`, `.${ext}`))]
+  private async _attemptDownload(got: GotScraping, url: string, gid: string, retries: number): Promise<Buffer | null> {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const response = await got.get(url, {
+          headers: { 'Referer': `https://nhentai.net/g/${gid}/` },
+          timeout: { request: this.config.downloadTimeout },
+          retry: { limit: 0 },
+          throwHttpErrors: true,
+        });
 
-    for (const [tryIndex, currentUrl] of urlsToTry.entries()) {
-      for (let i = 0; i <= retries; i++) {
-        try {
-          if (tryIndex > 0 && this.config.debug) {
-            logger.info(`正在回退尝试: ${currentUrl}`);
-          }
-          
-          const response = await got.get(currentUrl, {
-            headers: { 'Referer': `https://nhentai.net/g/${gid}/` },
-            timeout: { request: this.config.downloadTimeout },
-            retry: { limit: 0 },
-            throwHttpErrors: false,
-          });
-          
-          if (response.statusCode === 404) {
-            if (this.config.debug) logger.warn(`URL ${currentUrl} 返回 404，立即尝试下一种格式...`);
-            break;
-          }
+        const contentType = response.headers['content-type'];
+        if (!contentType || !contentType.startsWith('image/')) {
+          throw new Error(`返回的不是图片 (Content-Type: ${contentType || 'N/A'})`);
+        }
+        
+        return response.rawBody;
 
-          const contentType = response.headers['content-type'];
-          if (!contentType || !contentType.startsWith('image/')) {
-            if (this.config.debug) logger.warn(`URL ${currentUrl} 返回的不是图片 (Content-Type: ${contentType || 'N/A'})，立即尝试下一种格式...`);
-            break; 
-          }
-
-          if (response.statusCode >= 400) {
-            throw new Error(`请求失败，状态码: ${response.statusCode}`);
-          }
-
-          const buffer = response.rawBody;
-          const finalExt = path.extname(currentUrl).slice(1);
-          if (this.config.debug) logger.info(`图片 ${index + 1} (${currentUrl}) 下载成功。`);
-          return { index, buffer, extension: finalExt };
-
-        } catch (error) {
-          if (this.config.debug) {
-            logger.warn(`图片 ${index + 1} (${currentUrl}) 下载失败: ${error.message}`);
-          }
-          
-          if (i < retries) {
-            if (this.config.debug) logger.warn(`${currentUrl} (第 ${i + 1} 次重试), ${this.config.downloadRetryDelay}ms 后进行...`);
-            await sleep(this.config.downloadRetryDelay);
-          } else {
-            if (tryIndex >= urlsToTry.length - 1) {
-              logger.error(`图片 ${index + 1} (${url}) 在所有尝试后最终失败。`);
-              return { index, error };
-            }
-          }
+      } catch (error) {
+        if (this.config.debug) {
+          logger.warn(`URL ${url} 下载失败: ${error.message}`);
+        }
+        if (i < retries) {
+          if (this.config.debug) logger.warn(`${url} (第 ${i + 1} 次重试), ${this.config.downloadRetryDelay}ms 后进行...`);
+          await sleep(this.config.downloadRetryDelay);
         }
       }
     }
-    return { index, error: new Error(`所有图片格式均返回 404 或下载失败`) };
+    return null;
+  }
+
+  async downloadImage(got: GotScraping, url: string, index: number, gid: string, retries = this.config.downloadRetries): Promise<DownloadedImage | { index: number; error: Error }> {
+    const originalUrl = new URL(url);
+    const originalExt = path.extname(originalUrl.pathname).slice(1);
+    const fallbackExts = ['jpg', 'png'].filter(ext => ext !== originalExt);
+    
+    const baseHostname = originalUrl.hostname;
+    
+    const fallbackHosts = baseHostname.startsWith('t')
+      ? require('./constants').THUMB_HOST_FALLBACK
+      : require('./constants').IMAGE_HOST_FALLBACK;
+    const hostsToTry = [baseHostname, ...fallbackHosts];
+
+    for (const host of hostsToTry) {
+      if (host !== baseHostname && this.config.debug) {
+        logger.info(`[CDN回退] 主域名 ${baseHostname} 失败，尝试备用域名: ${host}`);
+      }
+      
+      originalUrl.hostname = host;
+      const urlsWithHost = [
+        originalUrl.href,
+        ...fallbackExts.map(ext => originalUrl.href.replace(`.${originalExt}`, `.${ext}`))
+      ];
+
+      for (const currentUrl of urlsWithHost) {
+        try {
+          const buffer = await this._attemptDownload(got, currentUrl, gid, retries);
+          if (buffer) {
+            const finalExt = path.extname(new URL(currentUrl).pathname).slice(1);
+            if (this.config.debug) logger.info(`图片 ${index + 1} (${currentUrl}) 下载成功。`);
+            return { index, buffer, extension: finalExt };
+          }
+        } catch (error) {
+          if (this.config.debug) logger.warn(`尝试 ${currentUrl} 时发生意外错误: ${error.message}`);
+        }
+      }
+    }
+
+    logger.error(`图片 ${index + 1} (${url}) 在所有域名和格式尝试后最终失败。`);
+    return { index, error: new Error('所有主备域名和图片格式均下载失败') };
   }
   
+  /**
+   * [FIX] Implements a sequencer buffer using an async generator.
+   * This takes an unordered stream of downloaded images and yields them in the correct sequential order.
+   * This fixes the page order issue in PDFs and ZIPs caused by concurrent downloads.
+   */
+  private async * _createOrderedImageStream(imageStream: AsyncIterable<DownloadedImage>): AsyncGenerator<DownloadedImage> {
+    let nextIndex = 0;
+    const buffer = new Map<number, DownloadedImage>();
+
+    for await (const image of imageStream) {
+      buffer.set(image.index, image);
+      while (buffer.has(nextIndex)) {
+        yield buffer.get(nextIndex)!;
+        buffer.delete(nextIndex);
+        nextIndex++;
+      }
+    }
+    // Final check for any remaining items in the buffer, in case the stream ends
+    // but there's a contiguous sequence at the end.
+    while (buffer.has(nextIndex)) {
+      yield buffer.get(nextIndex)!;
+      buffer.delete(nextIndex);
+      nextIndex++;
+    }
+  }
+
   async createZip(imageStream: AsyncIterable<DownloadedImage>, password?: string): Promise<Buffer> {
     const isEncrypted = password && password.length > 0;
     const format = isEncrypted ? 'zip-encrypted' : 'zip';
@@ -162,7 +198,8 @@ export class Processor {
     
     zip.pipe(stream);
     
-    for await (const { index, buffer, extension } of imageStream) {
+    // [FIX] Process images from the ordered stream to ensure correct file order.
+    for await (const { index, buffer, extension } of this._createOrderedImageStream(imageStream)) {
       const pageNum = (index + 1).toString().padStart(3, '0');
       zip.append(buffer, { name: `${pageNum}.${extension}` });
     }
@@ -182,7 +219,8 @@ export class Processor {
       let pageCount = 0;
       const recompressionThreshold = (this.config.pdfJpegRecompressionSize || 500) * 1024;
 
-      for await (const { index, buffer } of imageStream) {
+      // [FIX] Process images from the ordered stream to ensure correct page order.
+      for await (const { index, buffer } of this._createOrderedImageStream(imageStream)) {
         pageCount++;
         onProgress(`正在处理第 ${pageCount} 张图片并写入PDF...`);
         const imagePath = path.resolve(tempDir, `${index}.jpg`);
@@ -229,4 +267,3 @@ export class Processor {
     }
   }
 }
-// --- END OF FILE src/processor.ts ---
