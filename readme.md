@@ -2,22 +2,21 @@
 
 [![npm](https://img.shields.io/npm/v/koishi-plugin-nhentai-downloader?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-nhentai-downloader)
 
-一个功能强大的 [nhentai.net](https://nhentai.net/) 漫画插件，为 [Koishi](https://koishi.chat/) 设计，提供高级搜索、多格式下载和智能容错功能。
+一个 [nhentai.net](https://nhentai.net/) 漫画插件，提供搜索、下载、查看热门或随机漫画功能。
 
 **注意：本插件内容涉及成人向（NSFW）漫画，请确保在合适的范围内使用。**
 
 ## 功能特性
 
-- **高级搜索**：支持关键词搜索、ID 精准查询，可按热门度（总热门、今日、本周）排序，并可按语言（中文/日文/英文）筛选。
-- **智能交互**：搜索结果支持多页浏览，可通过 `F` (下一页)、`B` (上一页) 轻松翻页，回复序号即可快速发起下载任务。
+- **高级搜索**：支持关键词搜索、ID 查询，可按热门度（总热门、今日、本周）排序，并可按语言（中文/日文/英文）筛选。
+- **交互草错**：搜索结果支持多页浏览，可通过 `F` (下一页)、`B` (上一页) 翻页，回复序号即可快速发起下载任务。
 - **多格式下载**：可将漫画打包为 `PDF` 文件、`ZIP` 压缩包，或以 `逐张图片` 的形式发送，满足不同阅读和存储需求。
 - **文件加密**：支持为 `PDF` 和 `ZIP` 文件设置密码，保护隐私。
-- **链接识别**：可配置为自动识别聊天中出现的 nhentai 画廊链接，并直接响应。
-- **抗风控处理**：内置图片抗风控处理，可在一定程度上规避平台审查。
+- **链接识别**：可配置为自动识别聊天中出现的 nhentai 画廊链接，并直接响应下载。
 
 ## 安装
 
-可从 Koishi 插件市场搜索 `nhentai-downloader` 安装。
+从 Koishi 插件市场搜索 `nhentai-downloader` 安装。
 
 ## 依赖项说明
 
@@ -29,7 +28,7 @@
 
 根据关键词或漫画 ID 进行搜索。
 
-- **别名**: `nh搜索`, `search`
+- **别名**: `nh搜索`, `nh search`
 - **选项**:
   - `-s, --sort <type>`: 按热门度排序。可选值: `popular`, `popular-today`, `popular-week`。
   - `-l, --lang <lang>`: 筛选特定语言。可选值: `chinese`, `japanese`, `english`, `all`。
@@ -38,10 +37,10 @@
 # 关键词搜索
 nh.search touhou
 
-# 使用选项进行高级搜索
+# 使用选项进行搜索
 nh.search touhou -s popular-week -l chinese
 
-# ID 精准查询
+# ID 查询
 nh.search 177013
 ```
 
@@ -51,7 +50,7 @@ nh.search 177013
 
 根据漫画 ID 或 nhentai 官网链接直接下载作品。
 
-- **别名**: `nh下载`, `download`
+- **别名**: `nh下载`, `nh download`
 - **选项**:
   - `-p, --pdf`: 输出为 PDF 文件。
   - `-z, --zip`: 输出为 ZIP 压缩包。
@@ -72,7 +71,7 @@ nh.download https://nhentai.net/g/123456/ -p -k mypassword
 
 获取 nhentai 当前的热门漫画列表。
 
-- **别名**: `nh热门`, `popular`
+- **别名**: `nh热门`, `nh popular`
 - **说明**: 此指令为 `nh.search "" -s popular` 的快捷方式。
 
 ---
@@ -81,7 +80,7 @@ nh.download https://nhentai.net/g/123456/ -p -k mypassword
 
 随机获取一本漫画的详细信息，并提示是否下载。
 
-- **别名**: `nh随机`, `random`, `天降好运`
+- **别名**: `nh随机`, `nh random`, `天降好运`
 
 ---
 
@@ -133,11 +132,11 @@ nh.download https://nhentai.net/g/123456/ -p -k mypassword
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `downloadConcurrency` | `number` | `10` | 下载图片时的最大并发请求数 (1-25)。 |
-| `downloadTimeout` | `number` | `10000` | 单张图片下载的超时时间 (毫秒)。 |
+| `downloadTimeout` | `number` | `15` | 单张图片下载的超时时间 (秒)。 |
 | `downloadRetries` | `number` | `3` | 下载失败后的重试次数 (0-5)。 |
-| `downloadRetryDelay` | `number` | `1000` | 每次重试前的等待时间 (毫秒)。 |
+| `downloadRetryDelay` | `number` | `1` | 每次重试前的等待时间 (秒)。 |
 | `cache.enableApiCache`| `boolean`| `true` | 启用 API 响应缓存，加快重复请求的响应。 |
-| `cache.apiCacheTTL` | `number` | `600000` | API 缓存的有效时间 (毫秒)。 |
+| `cache.apiCacheTTL` | `number` | `10` | API 缓存的有效时间 (分钟)。 |
 
 ---
 
