@@ -1,4 +1,8 @@
-lib
+# Build outputs that should be tracked for npm publishing
+lib/
+wasm-dist/
+
+# Other build artifacts to ignore
 dist
 external
 
@@ -17,3 +21,16 @@ tsconfig.tsbuildinfo
 *.njsproj
 *.sln
 API-response.txt
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+yakumo.yml
+.github/workflows/build-wasm.yml
+scripts/post-wasm-build.js
