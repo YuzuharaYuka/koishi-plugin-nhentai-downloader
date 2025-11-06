@@ -21,9 +21,10 @@ export async function initWasmProcessor(): Promise<void> {
   try {
     // 定义可能的 WASM 模块路径
     const searchPaths = [
-      path.join(__dirname, '../../wasm-dist/wasm_image_processor.js'), // 生产环境路径
-      path.join(__dirname, '../../../wasm-dist/wasm_image_processor.js'), // 开发环境路径 1
-      path.resolve(process.cwd(), 'external/nhentai-downloader/wasm-dist/wasm_image_processor.js'), // 开发环境路径 2
+      path.join(__dirname, '../wasm-dist/wasm_image_processor.js'), // 生产环境路径（打包后 lib/index.js）
+      path.join(__dirname, '../../wasm-dist/wasm_image_processor.js'), // 开发环境路径 1（lib/processors/wasm.js）
+      path.join(__dirname, '../../../wasm-dist/wasm_image_processor.js'), // 开发环境路径 2
+      path.resolve(process.cwd(), 'external/nhentai-downloader/wasm-dist/wasm_image_processor.js'), // 开发环境路径 3
     ]
 
     const wasmJsPath = searchPaths.find((p) => fs.existsSync(p))
