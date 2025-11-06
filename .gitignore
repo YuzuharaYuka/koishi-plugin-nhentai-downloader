@@ -1,36 +1,70 @@
-# Build outputs that should be tracked for npm publishing
+# 编译产物 (不提交到 Git，但会通过 .npmignore 控制发包)
 lib/
 wasm-dist/
+dist/
 
-# Other build artifacts to ignore
-dist
-external
+# 依赖和缓存
+node_modules/
+.pnp/
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
 
-node_modules
-npm-debug.log
-yarn-debug.log
-yarn-error.log
-tsconfig.tsbuildinfo
+# 日志文件
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
 
+# 构建产物
+*.tsbuildinfo
 .eslintcache
+*.tgz
+
+# 操作系统文件
 .DS_Store
-.idea
-.vscode
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
-API-response.txt
 
-# Temporary files
+# 临时文件
 *.tmp
 *.temp
-*.log
+.cache/
 
-# OS generated files
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-yakumo.yml
-.github/workflows/build-wasm.yml
-scripts/post-wasm-build.js
+# 测试覆盖率
+coverage/
+.nyc_output/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 其他
+API-response.txt
+external/

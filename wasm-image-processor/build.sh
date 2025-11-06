@@ -35,9 +35,12 @@ cargo --version
 wasm-pack --version
 echo ""
 
-# Build for Node.js target with optimizations
-echo "🔨 Compiling Rust to WASM (Node.js target)..."
+# Build for Node.js target with optimizations and SIMD support
+echo "🔨 Compiling Rust to WASM (Node.js target with SIMD)..."
 echo ""
+
+# 设置 RUSTFLAGS 以启用 SIMD128 (准则 5: 性能优化)
+export RUSTFLAGS="-C target-feature=+simd128"
 
 wasm-pack build \
     --target nodejs \
