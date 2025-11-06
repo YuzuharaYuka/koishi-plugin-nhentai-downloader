@@ -67,11 +67,11 @@ export class Processor {
     return this.imageCache
   }
 
-  public applyAntiGzip(buffer: Buffer, identifier?: string): Buffer {
+  public applyAntiGzip(buffer: Buffer, identifier?: string): { buffer: Buffer; format: string } {
     return applyAntiGzipHelper(this.wasm, buffer, this.config, identifier)
   }
 
-  public batchApplyAntiGzip(images: Array<{ buffer: Buffer; identifier?: string }>): Buffer[] {
+  public batchApplyAntiGzip(images: Array<{ buffer: Buffer; identifier?: string }>): Array<{ buffer: Buffer; format: string }> {
     return batchApplyAntiGzipHelper(this.wasm, images, this.config)
   }
 

@@ -3,8 +3,6 @@
 
 use wasm_bindgen::prelude::*;
 
-/// Batch convert multiple images to JPEG
-/// Returns array of results (each can be success buffer or error)
 pub fn batch_convert_to_jpeg(buffers: Vec<Vec<u8>>, quality: u8) -> Vec<Result<Vec<u8>, String>> {
     buffers
         .into_iter()
@@ -12,16 +10,10 @@ pub fn batch_convert_to_jpeg(buffers: Vec<Vec<u8>>, quality: u8) -> Vec<Result<V
         .collect()
 }
 
-/// Batch apply anti-censorship and convert to JPEG for multiple images
-/// More efficient than processing images one by one
 pub fn batch_apply_anti_censorship_jpeg(
     buffers: Vec<Vec<u8>>,
     noise_intensity: f32,
-    add_border: bool,
-    quality: u8,
 ) -> Vec<Result<Vec<u8>, String>> {
-    // For WASM target, process sequentially
-    // For native builds with rayon, can parallelize
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
@@ -31,8 +23,6 @@ pub fn batch_apply_anti_censorship_jpeg(
                 crate::anti_censorship::apply_anti_censorship_jpeg(
                     buffer,
                     noise_intensity,
-                    add_border,
-                    quality,
                 )
             })
             .collect()
@@ -46,8 +36,6 @@ pub fn batch_apply_anti_censorship_jpeg(
                 crate::anti_censorship::apply_anti_censorship_jpeg(
                     &buffer,
                     noise_intensity,
-                    add_border,
-                    quality,
                 )
             })
             .collect()
@@ -55,14 +43,12 @@ pub fn batch_apply_anti_censorship_jpeg(
 }
 
 // WASM 绑定辅助函数
-
-/// WASM wrapper for batch_convert_to_jpeg
 pub fn wasm_batch_convert_to_jpeg(buffers: Vec<JsValue>, quality: u8) -> Vec<JsValue> {
     let rust_buffers: Vec<Vec<u8>> = buffers
         .into_iter()
-        .filter_map(|js_val| {
+        .map(|js_val| {
             let uint8_array = js_sys::Uint8Array::new(&js_val);
-            Some(uint8_array.to_vec())
+            uint8_array.to_vec()
         })
         .collect();
 
@@ -79,22 +65,19 @@ pub fn wasm_batch_convert_to_jpeg(buffers: Vec<JsValue>, quality: u8) -> Vec<JsV
         .collect()
 }
 
-/// WASM wrapper for batch_apply_anti_censorship_jpeg
 pub fn wasm_batch_apply_anti_censorship_jpeg(
     buffers: Vec<JsValue>,
     noise_intensity: f32,
-    add_border: bool,
-    quality: u8,
 ) -> Vec<JsValue> {
     let rust_buffers: Vec<Vec<u8>> = buffers
         .into_iter()
-        .filter_map(|js_val| {
+        .map(|js_val| {
             let uint8_array = js_sys::Uint8Array::new(&js_val);
-            Some(uint8_array.to_vec())
+            uint8_array.to_vec()
         })
         .collect();
 
-    batch_apply_anti_censorship_jpeg(rust_buffers, noise_intensity, add_border, quality)
+    batch_apply_anti_censorship_jpeg(rust_buffers, noise_intensity)
         .into_iter()
         .map(|result| match result {
             Ok(data) => {

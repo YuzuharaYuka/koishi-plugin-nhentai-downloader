@@ -26,7 +26,7 @@ fn calculate_optimal_quality(width: u32, height: u32, base_quality: u8) -> u8 {
         base_quality
     };
 
-    adjusted.max(1).min(100)
+    adjusted.clamp(1, 100)
 }
 
 /// Convert any image format to JPEG with specified quality
@@ -94,7 +94,7 @@ pub fn process_image(
     quality: u8,
     apply_anti_censor: bool,
     noise_intensity: f32,
-    add_border: bool,
+    _add_border: bool,
 ) -> Result<Vec<u8>, String> {
     let format = detect_format(buffer);
 
@@ -106,8 +106,6 @@ pub fn process_image(
             return crate::anti_censorship::apply_anti_censorship_jpeg(
                 &jpeg,
                 noise_intensity,
-                add_border,
-                quality,
             );
         }
 
@@ -119,8 +117,6 @@ pub fn process_image(
         return crate::anti_censorship::apply_anti_censorship_jpeg(
             buffer,
             noise_intensity,
-            add_border,
-            quality,
         );
     }
 

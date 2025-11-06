@@ -88,8 +88,9 @@ export class CoverService {
       )
 
       if ('buffer' in result) {
-        const processedBuffer = this.processor.applyAntiGzip(result.buffer, `thumb-${gallery.id}`)
-        return { buffer: processedBuffer, extension: result.extension }
+        const processed = this.processor.applyAntiGzip(result.buffer, `thumb-${gallery.id}`)
+        const extension = processed.format === 'webp' ? 'webp' : result.extension
+        return { buffer: processed.buffer, extension }
       }
 
       return null
@@ -128,8 +129,9 @@ export class CoverService {
           )
 
           if ('buffer' in result) {
-            const processedBuffer = this.processor.applyAntiGzip(result.buffer, `thumb-${gallery.id}`)
-            covers.set(gallery.id as string, { buffer: processedBuffer, extension: result.extension })
+            const processed = this.processor.applyAntiGzip(result.buffer, `thumb-${gallery.id}`)
+            const extension = processed.format === 'webp' ? 'webp' : result.extension
+            covers.set(gallery.id as string, { buffer: processed.buffer, extension })
           }
         } catch (itemError) {
           logger.error(`处理画廊 ${gallery?.id} 缩略图时出错: ${itemError.message}`)

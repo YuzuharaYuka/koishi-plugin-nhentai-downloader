@@ -72,36 +72,38 @@ export async function conditionallyCompressJpeg(
 
 /**
  * 对单张图片应用反和谐处理。
+ * @returns 包含处理后的 buffer 和新格式的对象
  */
 export function applyAntiGzip(
   wasm: WasmImageProcessor,
   buffer: Buffer,
   config: Config,
   identifier?: string,
-): Buffer {
-  if (!config.antiGzip.enabled) return buffer
+): { buffer: Buffer; format: string } {
+  if (!config.antiGzip.enabled) return { buffer, format: 'original' }
 
   const logPrefix = `[AntiGzip]${identifier ? ` (${identifier})` : ''}`
   try {
-    const result = wasm.apply_anti_censorship_jpeg(new Uint8Array(buffer), 0.4, true, 85)
-    if (config.debug) logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes`)
-    return Buffer.from(result)
+    const result = wasm.apply_anti_censorship_jpeg(new Uint8Array(buffer), 0.4)
+    if (config.debug) logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes (WebP)`)
+    return { buffer: Buffer.from(result), format: 'webp' }
   } catch (error) {
     logger.warn(`${logPrefix} 处理失败，返回原图: ${error.message}`)
-    return buffer
+    return { buffer, format: 'original' }
   }
 }
 
 /**
  * 批量对图片应用反和谐处理。
+ * @returns 包含处理后的 buffer 和格式信息的数组
  */
 export function batchApplyAntiGzip(
   wasm: WasmImageProcessor,
   images: Array<{ buffer: Buffer; identifier?: string }>,
   config: Config,
-): Buffer[] {
+): Array<{ buffer: Buffer; format: string }> {
   if (!config.antiGzip.enabled || images.length === 0) {
-    return images.map((img) => img.buffer)
+    return images.map((img) => ({ buffer: img.buffer, format: 'original' }))
   }
 
   return images.map((img) => applyAntiGzip(wasm, img.buffer, config, img.identifier))

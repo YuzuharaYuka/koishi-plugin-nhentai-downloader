@@ -78,11 +78,16 @@ export class StreamProcessor {
           if (onProgress) await onProgress(processedCount, imageUrls.length)
 
           if ('buffer' in result) {
-            const processedBuffer = this.processor.applyAntiGzip(
+            const processed = this.processor.applyAntiGzip(
               result.buffer,
               `${galleryId}-page-${result.index + 1}`,
             )
-            downloadedImages.set(result.index, { ...result, buffer: processedBuffer })
+            const updatedResult = {
+              ...result,
+              buffer: processed.buffer,
+              extension: processed.format === 'webp' ? 'webp' : result.extension
+            }
+            downloadedImages.set(result.index, updatedResult)
           } else {
             failedIndexes.push(item.index)
           }
@@ -120,6 +125,10 @@ export class StreamProcessor {
     }
 
     await Promise.all(workerPromises)
+
+    // 添加下载完成日志
+    const successCount = processedCount - failedIndexes.length
+    logger.info(`图片下载完成: ${successCount}/${imageUrls.length} 成功${failedIndexes.length > 0 ? `, ${failedIndexes.length} 失败` : ''}`)
   }
 
   async *createPackageStream(
@@ -133,6 +142,7 @@ export class StreamProcessor {
 
     let nextYieldIndex = 0
     let downloadedCount = 0
+    let successCount = 0
     let allDownloaded = false
 
     const imageCache = this.processor.getImageCache?.()
@@ -162,6 +172,7 @@ export class StreamProcessor {
           }
 
           if ('buffer' in result) {
+            successCount++
             if (imageCache) {
               const cachedProcessed = await imageCache.getProcessed(galleryId, mediaId, result.index)
               if (cachedProcessed) {
@@ -182,6 +193,8 @@ export class StreamProcessor {
 
     Promise.all(downloadWorkers).then(() => {
       allDownloaded = true
+      const failedCount = downloadedCount - successCount
+      logger.info(`图片下载完成: ${successCount}/${imageUrls.length} 成功${failedCount > 0 ? `, ${failedCount} 失败` : ''} (${((successCount / imageUrls.length) * 100).toFixed(1)}%)`)
     })
 
     while (!allDownloaded || processedBuffer.size > 0) {

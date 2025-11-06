@@ -72,15 +72,14 @@ pub fn get_dimensions(buffer: &[u8]) -> Result<JsValue, JsValue> {
 /// 方案A: 最小改动实现最大效率
 /// - 稀疏随机噪点（仅约3%像素，±1-2亮度）
 /// - 微小缩放（随机±0-1像素）
+/// - 随机数字水印（低不透明度）
 /// - 输出格式：统一WebP（避免QQ对JPEG的检测）
 #[wasm_bindgen]
 pub fn apply_anti_censorship_jpeg(
     buffer: &[u8],
     noise_intensity: f32,
-    add_border: bool,
-    quality: u8,
 ) -> Result<Vec<u8>, JsValue> {
-    anti_censorship::apply_anti_censorship_jpeg(buffer, noise_intensity, add_border, quality)
+    anti_censorship::apply_anti_censorship_jpeg(buffer, noise_intensity)
         .map_err(|e| JsValue::from_str(&e))
 }
 
@@ -127,10 +126,8 @@ pub fn batch_convert_to_jpeg(buffers: Vec<JsValue>, quality: u8) -> Vec<JsValue>
 pub fn batch_apply_anti_censorship_jpeg(
     buffers: Vec<JsValue>,
     noise_intensity: f32,
-    add_border: bool,
-    quality: u8,
 ) -> Vec<JsValue> {
-    batch::wasm_batch_apply_anti_censorship_jpeg(buffers, noise_intensity, add_border, quality)
+    batch::wasm_batch_apply_anti_censorship_jpeg(buffers, noise_intensity)
 }
 
 // ============================================================================

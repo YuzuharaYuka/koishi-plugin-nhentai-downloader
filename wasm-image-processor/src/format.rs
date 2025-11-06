@@ -37,31 +37,15 @@ pub fn detect_format(buffer: &[u8]) -> Option<ImageFormat> {
     }
 
     // AVIF: ftyp...avif
-    if buffer.len() >= 12 {
-        if &buffer[4..8] == b"ftyp" {
-            // Check for AVIF brands
-            if buffer.len() >= 16 {
-                let brand = &buffer[8..12];
-                if brand == b"avif" || brand == b"avis" {
-                    return Some(ImageFormat::Avif);
-                }
+    if buffer.len() >= 12 && &buffer[4..8] == b"ftyp" {
+        // Check for AVIF brands
+        if buffer.len() >= 16 {
+            let brand = &buffer[8..12];
+            if brand == b"avif" || brand == b"avis" {
+                return Some(ImageFormat::Avif);
             }
         }
     }
 
     None
-}
-
-/// Get file extension for image format
-#[allow(dead_code)]
-pub fn get_extension(format: ImageFormat) -> &'static str {
-    match format {
-        ImageFormat::Png => "png",
-        ImageFormat::Jpeg => "jpg",
-        ImageFormat::Gif => "gif",
-        ImageFormat::WebP => "webp",
-        ImageFormat::Bmp => "bmp",
-        ImageFormat::Avif => "avif",
-        _ => "bin",
-    }
 }

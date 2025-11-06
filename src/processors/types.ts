@@ -10,27 +10,21 @@ export interface WasmImageProcessor {
   convert_to_jpeg(buffer: Uint8Array, quality: number): Uint8Array
   /** 将 WebP 图片转换为 JPEG。 */
   webp_to_jpeg(buffer: Uint8Array, quality: number): Uint8Array
-  /** 应用轻量级抗审查处理并转换为WebP格式（避免QQ对JPEG的检测）。 */
-  apply_anti_censorship_jpeg(buffer: Uint8Array, noise_intensity: number, add_border: boolean, quality: number): Uint8Array
+  /**
+   * 应用轻量级抗审查处理并转换为 WebP 格式。
+   * 策略：在图片角落添加随机数字水印（0-9，低不透明度 15%）。
+   * @param buffer - 输入图片的二进制数据
+   * @param noise_intensity - 保留参数用于向后兼容，当前未使用
+   * @returns WebP 格式的图片数据
+   */
+  apply_anti_censorship_jpeg(buffer: Uint8Array, noise_intensity: number): Uint8Array
   /** 按指定质量压缩 JPEG 图片。 */
   compress_jpeg(buffer: Uint8Array, quality: number, skip_threshold: number): Uint8Array
   /** 获取图片尺寸。 */
   get_dimensions(buffer: Uint8Array): { width: number; height: number }
-  /** 完整处理流程：转换、反和谐、压缩。 */
-  process_image(
-    buffer: Uint8Array,
-    target_format: string,
-    quality: number,
-    apply_anti_censor: boolean,
-    noise_intensity: number,
-    add_border: boolean,
-  ): Uint8Array
-  /** 批量对图片应用抗审查处理并转换为WebP。 */
   batch_apply_anti_censorship_jpeg(
     buffers: Uint8Array[],
     noise_intensity: number,
-    add_border: boolean,
-    quality: number,
   ): Uint8Array[]
 }
 
