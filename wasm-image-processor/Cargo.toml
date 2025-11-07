@@ -34,8 +34,5 @@ opt-level = "z"  # 针对大小优化，对 WASM 很重要
 codegen-units = 1
 lto = true  # 链接时优化
 
-# SIMD 通过构建脚本的 RUSTFLAGS 环境变量启用
-# 参见 build.bat 和 package.json 中的 build:wasm 脚本
-
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-O4", "--enable-bulk-memory", "--enable-simd"]

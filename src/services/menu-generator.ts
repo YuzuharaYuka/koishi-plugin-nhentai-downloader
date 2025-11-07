@@ -360,7 +360,7 @@ export class MenuGenerator {
     thumbnails: Buffer[],
     totalResults?: number
   ): Promise<Buffer> {
-    const { columns, maxRows, thumbWidth, thumbHeight, padding, gap, canvasWidth, titleFontSize, infoFontSize } = this.options
+    const { columns, maxRows, thumbWidth, thumbHeight, padding, gap, titleFontSize, infoFontSize } = this.options
 
     // 计算实际显示的画廊数量
     const maxItems = columns * maxRows
@@ -371,6 +371,10 @@ export class MenuGenerator {
     const headerHeight = 80
     const footerHeight = 65 // 增加底部高度以容纳完整提示信息
     const cardHeight = thumbHeight + 90 // 与信息区域高度保持一致
+    
+    // 动态计算画布宽度：根据列数自适应
+    const totalCardsWidth = columns * thumbWidth + (columns - 1) * gap
+    const canvasWidth = totalCardsWidth + padding * 2
     const canvasHeight = headerHeight + rows * cardHeight + (rows - 1) * gap + footerHeight + padding * 2
 
     // 创建画布
@@ -402,8 +406,7 @@ export class MenuGenerator {
       ctx.fillText(`当前显示 ${displayCount} 个结果`, canvasWidth / 2, statY)
     }
 
-    // 计算卡片起始位置
-    const totalCardsWidth = columns * thumbWidth + (columns - 1) * gap
+    // 计算卡片起始位置（宽度已在上面计算）
     const startX = (canvasWidth - totalCardsWidth) / 2
     const startY = headerHeight + padding
 

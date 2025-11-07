@@ -240,12 +240,24 @@ export class ApiService {
     }
 
     try {
-      if (this.config.debug) logger.info(`搜索: "${query}" (第 ${page} 页)`)
+      // 规范化 sort 参数: API 端点可能只支持 'popular', 细分的时间范围参数可能被忽略
+      let normalizedSort = sort
+      if (sort && (sort === 'popular-today' || sort === 'popular-week' || sort === 'popular-month')) {
+        if (this.config.debug) {
+          logger.warn(`sort 参数 "${sort}" 可能不被 API 完全支持，将尝试原样传递`)
+        }
+        // 保持原值，让 API 自行处理（可能会被忽略或降级为 popular）
+        normalizedSort = sort
+      }
+
+      if (this.config.debug) logger.info(`搜索: "${query}" (第 ${page} 页, sort: ${normalizedSort || '无'})`)
 
       const searchParams = new URLSearchParams({ query, page: page.toString() })
-      if (sort) searchParams.set('sort', sort)
+      if (normalizedSort) searchParams.set('sort', normalizedSort)
 
       const url = `${API_BASE}/galleries/search?${searchParams.toString()}`
+      if (this.config.debug) logger.info(`请求 URL: ${url}`)
+
       const data = await this.gotManager.apiGot!.get(url).json<SearchResult>()
 
       if (this.config.debug) logger.info(`搜索完成，找到 ${data.result.length} 个结果`)

@@ -94,11 +94,11 @@ export const Config: Schema<Config> = Schema.intersect([
       .description('将搜索结果以图片菜单形式展示')
       .default(true),
     imageMenuColumns: Schema.number()
-      .min(2).max(4).step(1)
+      .min(1).max(5).step(1)
       .description('图片菜单每行显示的画廊数量')
       .default(3),
     imageMenuMaxRows: Schema.number()
-      .min(1).max(4).step(1)
+      .min(1).max(5).step(1)
       .description('图片菜单最大行数')
       .default(3),
   }).description('搜索设置'),

@@ -111,34 +111,21 @@ export function formatGalleryInfo(
   return h('p', infoLines.join('\n'))
 }
 
-export function buildSearchQueryQueue(
+export function buildSearchQuery(
   query: string,
   lang: SearchOptions['lang'],
-): { query: string; message: string }[] {
+): string {
   const baseQuery = query.trim()
 
-  const buildQuery = (langFilter: string) => {
-    if (baseQuery.includes('language:') || baseQuery.includes('汉化')) {
-      return baseQuery
-    }
-    return `${baseQuery} ${langFilter}`.trim()
+  if (baseQuery.includes('language:') || baseQuery.includes('汉化')) {
+    return baseQuery
   }
 
-  if (lang === 'chinese') {
-    return [
-      { query: buildQuery('language:chinese'), message: `正在尝试使用 \`language:chinese\`...` },
-      { query: buildQuery('-language:english -language:japanese'), message: `正在尝试排除其他语言...` },
-      { query: buildQuery('汉化'), message: `正在尝试使用关键词 \`汉化\`...` },
-      { query: baseQuery, message: `正在尝试搜索所有语言...` },
-    ]
+  if (lang && lang !== 'all') {
+    return `${baseQuery} language:${lang}`.trim()
   }
 
-  let effectiveQuery = baseQuery
-  if (lang && lang !== 'all' && !baseQuery.includes('language:')) {
-    effectiveQuery = `${baseQuery} language:${lang}`.trim()
-  }
-
-  return [{ query: effectiveQuery, message: '' }]
+  return baseQuery
 }
 
 export async function handleIdSearch(
@@ -182,21 +169,10 @@ export async function handleKeywordSearchWithMenu(
   const lang = options.lang || config.defaultSearchLanguage
   const limit = config.imageMenuColumns * config.imageMenuMaxRows
 
-  const queryQueue = buildSearchQueryQueue(query, lang)
-  let effectiveQuery = ''
-  let initialResult: SearchResult | null = null
+  const effectiveQuery = buildSearchQuery(query, lang)
+  const initialResult = await apiService.searchGalleries(effectiveQuery, 1, sort)
 
-  for (const { query: currentQuery, message } of queryQueue) {
-    effectiveQuery = currentQuery
-    if (message) await session.send(message)
-    const result = await apiService.searchGalleries(effectiveQuery, 1, sort)
-    if (result?.result.length > 0) {
-      initialResult = result
-      break
-    }
-  }
-
-  if (!initialResult) {
+  if (!initialResult || initialResult.result.length === 0) {
     await session.send(`未找到与"${query}"相关的漫画。`)
     return
   }
@@ -314,21 +290,10 @@ export async function handleKeywordSearch(
   const sort = options.sort
   const lang = options.lang || config.defaultSearchLanguage
 
-  const queryQueue = buildSearchQueryQueue(query, lang)
-  let effectiveQuery = ''
-  let initialResult: SearchResult | null = null
+  const effectiveQuery = buildSearchQuery(query, lang)
+  const initialResult = await apiService.searchGalleries(effectiveQuery, 1, sort)
 
-  for (const { query: currentQuery, message } of queryQueue) {
-    effectiveQuery = currentQuery
-    if (message) await session.send(message)
-    const result = await apiService.searchGalleries(effectiveQuery, 1, sort)
-    if (result?.result.length > 0) {
-      initialResult = result
-      break
-    }
-  }
-
-  if (!initialResult) {
+  if (!initialResult || initialResult.result.length === 0) {
     await session.send(`未找到与"${query}"相关的漫画。`)
     return
   }

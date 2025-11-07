@@ -41,7 +41,7 @@ export function registerSearchCommands(
   const nhCmd = ctx.command('nh', 'Nhentai 漫画下载与搜索工具').alias('nhentai')
 
   nhCmd
-    .subcommand('.search <query:text>', '搜索漫画或根据ID获取漫画信息')
+    .subcommand('.search [...query:string]', '搜索漫画或根据ID获取漫画信息')
     .alias('nh搜索', 'nhsearch', 'nh search')
     .option('sort', '-s <value:string> 按热门排序 (可选: popular, popular-today, popular-week)')
     .option('lang', '-l <value:string> 指定语言 (可选: chinese, japanese, english, all)')
@@ -52,9 +52,13 @@ export function registerSearchCommands(
     )
     .example('nh.search touhou  # 搜索 "touhou"')
     .example('nh.search 177013  # 获取 ID 为 177013 的作品')
-    .example('nh.search touhou -s popular  # 按热门度搜索')
-    .action(async ({ session, options }, query) => {
+    .example('nh.search touhou -s popular  # 按热门度搜索 "touhou"')
+    .example('nh.search -s popular-today -l chinese touhou  # 组合使用多个选项')
+    .action(async ({ session, options }, ...queryParts) => {
       if (!ensureInitialized(session)) return
+
+      // 将数组拼接成字符串
+      const query = queryParts.join(' ').trim()
       if (!query) return session.send('请输入搜索关键词或漫画ID。')
 
       const apiService = getApiService()
@@ -70,12 +74,29 @@ export function registerSearchCommands(
         return session.send(`无效的语言选项。可用值: ${validLangs.join(', ')}`)
       }
 
+      // 提示: nhentai API 对 popular-today 和 popular-week 的支持可能不稳定
+      if (options.sort && options.sort !== 'popular' && config.debug) {
+        logger.warn(`使用 sort 参数: ${options.sort}, 注意 nhentai API 可能不完全支持此参数`)
+      }
+
       const searchOptions: SearchOptions = {
         sort: options.sort as SearchOptions['sort'],
         lang: options.lang as SearchOptions['lang'],
       }
 
-      const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + `正在搜索 ${query}...`)
+      const effectiveLang = searchOptions.lang || config.defaultSearchLanguage
+      const langDisplayMap = {
+        'chinese': '中文',
+        'japanese': '日语',
+        'english': '英语',
+        'all': ''
+      }
+      const langDisplay = langDisplayMap[effectiveLang]
+      const searchMessage = langDisplay
+        ? `正在搜索 ${query}...（语言：${langDisplay}）`
+        : `正在搜索 ${query}...`
+
+      const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + searchMessage)
       try {
         if (/^\d+$/.test(query)) {
           await handleIdSearch(session, query, nhentaiService, config, {
