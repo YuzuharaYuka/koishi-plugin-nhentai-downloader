@@ -44,15 +44,12 @@ async function sendWithOptionalForward(
   useForward: boolean,
   supportedPlatforms: string[],
 ): Promise<void> {
+  const contentArray = Array.isArray(content) ? content : [content]
+
   if (useForward && supportedPlatforms.includes(session.platform)) {
-    const contentArray = Array.isArray(content) ? content : [content]
     await session.send(h('message', { forward: true }, contentArray))
   } else {
-    if (Array.isArray(content)) {
-      await session.send(content.flatMap((m) => m.children || m))
-    } else {
-      await session.send(content)
-    }
+    await session.send(contentArray.flatMap((m) => m.children || m))
   }
 }
 
@@ -152,19 +149,27 @@ async function fetchMoreResults(
   apiService: ApiService,
 ): Promise<boolean> {
   const result = await apiService.searchGalleries(effectiveQuery, state.fetchedApiPage + 1, sort)
-  if (!result?.result.length) return false
+  if (!result) return false
+  if (!result.result || result.result.length === 0) return false
   state.allResults.push(...result.result)
   if (result.num_pages > state.totalApiPages) state.totalApiPages = result.num_pages
   state.fetchedApiPage++
   return true
 }
 
-function buildPromptMessage(currentPage: number, totalPages: number): string {
+function buildPromptMessage(
+  currentPage: number,
+  totalPages: number,
+  startIndex: number,
+  endIndex: number,
+  totalResults: number
+): string {
+  const position = `当前第 ${currentPage}/${totalPages} 页 (显示第 ${startIndex + 1}-${endIndex} 项，共约 ${totalResults} 项)`
   const prompts = ['回复序号下载']
   if (currentPage > 1) prompts.push('[B]上一页')
   if (currentPage < totalPages) prompts.push('[F]下一页')
   prompts.push('[N]退出')
-  return prompts.join('，') + '。'
+  return `${position}\n${prompts.join('，')}。`
 }
 
 async function handlePagination(
@@ -190,31 +195,49 @@ async function handlePagination(
     const startIndex = (state.currentDisplayPage - 1) * limit
     const endIndex = startIndex + limit
 
+    let loadFailed = false
     while (endIndex > state.allResults.length && state.fetchedApiPage < state.totalApiPages) {
-      await session.send(
-        h('quote', { id: session.messageId }) +
-          `正在加载更多结果 (第 ${state.fetchedApiPage + 1} / ${state.totalApiPages} API页)...`,
-      )
-      await fetchMoreResults(state, effectiveQuery, sort, apiService)
+      const success = await fetchMoreResults(state, effectiveQuery, sort, apiService)
+      if (!success) {
+        // 加载失败，停止尝试加载更多
+        loadFailed = true
+        break
+      }
     }
 
     const displayedResults = state.allResults.slice(startIndex, endIndex)
 
     if (displayedResults.length === 0) {
       if (state.currentDisplayPage > 1) {
-        await session.send('没有更多结果了。')
+        if (loadFailed) {
+          await session.send('加载更多结果失败，请检查网络连接或稍后重试。')
+        } else {
+          await session.send('没有更多结果了。')
+        }
         state.currentDisplayPage--
         continue
       } else {
-        await session.send(`未找到与"${query}"相关的漫画。`)
+        if (loadFailed) {
+          await session.send('搜索失败，请检查网络连接或稍后重试。')
+        } else {
+          await session.send(`未找到与"${query}"相关的漫画。`)
+        }
         break
       }
     }
 
     await displayHandler(displayedResults, startIndex, initialResult.num_pages * initialResult.per_page)
 
-    const totalDisplayPages = Math.ceil(state.allResults.length / limit)
-    await session.send(buildPromptMessage(state.currentDisplayPage, totalDisplayPages))
+    const totalResults = initialResult.num_pages * initialResult.per_page
+    const totalDisplayPages = Math.ceil(totalResults / limit)
+    const actualEndIndex = Math.min(endIndex, state.allResults.length)
+    await session.send(buildPromptMessage(
+      state.currentDisplayPage,
+      totalDisplayPages,
+      startIndex,
+      actualEndIndex,
+      totalResults
+    ))
 
     const reply = await session.prompt(config.promptTimeout * 1000)
     if (!reply) {
@@ -223,16 +246,14 @@ async function handlePagination(
       break
     }
 
-    const action = await handleUserInput(
+    if (await handleUserInput(
       reply,
       state,
       displayedResults,
       totalDisplayPages,
       session,
       onDownload,
-    )
-
-    if (action === 'break') {
+    ) === 'break') {
       if (onCleanup) onCleanup()
       break
     }
@@ -352,8 +373,8 @@ export async function handleKeywordSearchWithMenu(
       limit,
       apiService,
       config,
-      async (displayedResults, _startIndex, totalResults) => {
-        await menuService.sendSearchMenu(session, displayedResults, totalResults)
+      async (displayedResults, startIndex, totalResults) => {
+        await menuService.sendSearchMenu(session, displayedResults, totalResults, startIndex)
       },
       async (galleryId) => {
         menuService.clearMenu(session)

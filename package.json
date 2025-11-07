@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-nhentai-downloader",
   "description": "nhentai 漫画插件，提供搜索、下载、打包发送漫画作品的功能，支持 PDF/ZIP 加密",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "author": "YuzuharaYuka",
   "homepage": "https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader",
   "repository": {

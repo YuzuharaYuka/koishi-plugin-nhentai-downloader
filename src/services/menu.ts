@@ -29,7 +29,8 @@ export class MenuService {
   async sendSearchMenu(
     session: Session,
     galleries: Partial<Gallery>[],
-    totalResults?: number
+    totalResults?: number,
+    startIndex?: number
   ): Promise<Partial<Gallery>[]> {
     try {
       const maxItems = this.config.imageMenuColumns * this.config.imageMenuMaxRows
@@ -50,7 +51,7 @@ export class MenuService {
       }
 
       // 生成菜单图片
-      const menuImage = await this.menuGenerator.generateMenu(displayGalleries, thumbnails, totalResults)
+      const menuImage = await this.menuGenerator.generateMenu(displayGalleries, thumbnails, totalResults, startIndex)
 
       // 发送菜单图片
       await session.send(h.image(menuImage, 'image/png'))

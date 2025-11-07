@@ -164,7 +164,4 @@ export class NhentaiService {
   ): Promise<DownloadOutput | { error: string }> {
     return this.downloadManager.downloadGallery(id, outputType, password, onProgress)
   }
-
-  dispose(): void {
-  }
 }

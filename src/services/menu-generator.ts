@@ -358,7 +358,8 @@ export class MenuGenerator {
   async generateMenu(
     galleries: Partial<Gallery>[],
     thumbnails: Buffer[],
-    totalResults?: number
+    totalResults?: number,
+    startIndex?: number
   ): Promise<Buffer> {
     const { columns, maxRows, thumbWidth, thumbHeight, padding, gap, titleFontSize, infoFontSize } = this.options
 
@@ -371,7 +372,7 @@ export class MenuGenerator {
     const headerHeight = 80
     const footerHeight = 65 // 增加底部高度以容纳完整提示信息
     const cardHeight = thumbHeight + 90 // 与信息区域高度保持一致
-    
+
     // 动态计算画布宽度：根据列数自适应
     const totalCardsWidth = columns * thumbWidth + (columns - 1) * gap
     const canvasWidth = totalCardsWidth + padding * 2
@@ -400,7 +401,9 @@ export class MenuGenerator {
     ctx.fillStyle = '#b0b0b0'  // 提高亮度，从 #888 改为 #b0b0b0
 
     if (totalResults !== undefined && totalResults !== null) {
-      const statsText = `共找到 ${totalResults} 个结果，当前显示前 ${displayCount} 个`
+      const start = (startIndex ?? 0) + 1
+      const end = (startIndex ?? 0) + displayCount
+      const statsText = `共找到约 ${totalResults} 个结果，当前显示第 ${start}-${end} 项`
       ctx.fillText(statsText, canvasWidth / 2, statY)
     } else {
       ctx.fillText(`当前显示 ${displayCount} 个结果`, canvasWidth / 2, statY)

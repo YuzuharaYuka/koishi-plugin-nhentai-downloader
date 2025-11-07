@@ -8,8 +8,10 @@ export const THUMB_HOST_FALLBACK = ['t2.nhentai.net', 't3.nhentai.net', 't4.nhen
 // Supported nhentai hosts for link recognition
 export const NHENTAI_HOSTS = ['nhentai.net', 'nhentai.to'];
 const hostsRegexPart = NHENTAI_HOSTS.map(host => host.replace(/\./g, '\\.')).join('|');
-// Regex to extract gallery ID from URL
-export const galleryUrlRegex = new RegExp(`(?:https?://)?(?:${hostsRegexPart})/g/(\\d+)/?`);
+// Regex to extract gallery ID from URL or pure ID string
+export const galleryIdRegex = new RegExp(`^(?:(?:https?://)?(?:${hostsRegexPart})/g/)?(\\d+)/?$`);
+// Backward compatibility alias
+export const galleryUrlRegex = galleryIdRegex;
 
 // Map nhentai image type character to file extension
 export const imageExtMap: Record<string, 'jpg' | 'png' | 'gif' | 'webp'> = {

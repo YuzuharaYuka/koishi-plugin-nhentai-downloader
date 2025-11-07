@@ -12,10 +12,10 @@ import { MenuService } from './services/menu'
 export class NhentaiPlugin {
   private processor: Processor | null = null
   private apiService: ApiService
-  private nhentaiService: NhentaiService | null = null
+  private nhentaiService!: NhentaiService
   private menuService: MenuService | null = null
   private isInitialized = false
- 
+
   constructor(private ctx: Context, private config: Config) {
     if (config.debug) {
       logger.info('调试模式已启用')
@@ -70,9 +70,6 @@ export class NhentaiPlugin {
    * 获取 NhentaiService 实例。
    */
   public getNhentaiService(): NhentaiService {
-    if (!this.nhentaiService) {
-      throw new Error('NhentaiService 尚未初始化。')
-    }
     return this.nhentaiService
   }
 
@@ -95,7 +92,6 @@ export class NhentaiPlugin {
    */
   public dispose(): void {
     this.menuService?.dispose()
-    this.nhentaiService?.dispose()
     this.apiService?.dispose()
     this.processor?.dispose()
     this.isInitialized = false

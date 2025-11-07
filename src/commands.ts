@@ -9,12 +9,11 @@ import { handleDownloadCommand, DownloadOptions } from './handlers'
 import { galleryUrlRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
 
 async function deleteStatusMessage(session: Session, statusMsgId: string | undefined): Promise<void> {
-  if (statusMsgId) {
-    try {
-      await session.bot.deleteMessage(session.channelId, statusMsgId)
-    } catch (error) {
-      logger.debug('删除状态消息失败:', error)
-    }
+  if (!statusMsgId) return
+  try {
+    await session.bot.deleteMessage(session.channelId, statusMsgId)
+  } catch (error) {
+    logger.debug('删除状态消息失败:', error)
   }
 }
 
@@ -47,7 +46,11 @@ export function registerSearchCommands(
 
       // 将数组拼接成字符串
       const query = queryParts.join(' ').trim()
-      if (!query) return session.send('请输入搜索关键词或漫画ID。')
+
+      // 如果没有查询词且没有排序选项，返回错误
+      if (!query && !options.sort) {
+        return session.send('请输入搜索关键词或漫画ID。')
+      }
 
       const apiService = getApiService()
       const nhentaiService = getNhentaiService()
@@ -72,13 +75,14 @@ export function registerSearchCommands(
 
       const effectiveLang = searchOptions.lang || config.defaultSearchLanguage
       const langDisplay = LANGUAGE_DISPLAY_MAP[effectiveLang]
+      const displayQuery = query || '热门漫画'
       const searchMessage = langDisplay
-        ? `正在搜索 ${query}...（语言：${langDisplay}）`
-        : `正在搜索 ${query}...`
+        ? `正在搜索 ${displayQuery}...（语言：${langDisplay}）`
+        : `正在搜索 ${displayQuery}...`
 
       const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + searchMessage)
       try {
-        if (/^\d+$/.test(query)) {
+        if (query && /^\d+$/.test(query)) {
           await handleIdSearch(session, query, nhentaiService, config, {
             useForward: config.useForwardForSearch,
             showTags: config.showTagsInSearch,
@@ -136,10 +140,10 @@ export function registerDownloadCommands(
 
       const nhentaiService = getNhentaiService()
 
-      const match = idOrUrl.match(galleryUrlRegex) || idOrUrl.match(/^\d+$/)
-      if (!match) return session.send('输入的ID或链接无效，请检查后重试。')
+      const match = idOrUrl.match(galleryUrlRegex)
+      if (!match || !match[1]) return session.send('输入的ID或链接无效，请检查后重试。')
 
-      const id = match[1] || match[0]
+      const id = match[1]
       const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + `正在解析画廊 ${id}...`)
 
       try {
@@ -194,10 +198,10 @@ export function registerRandomCommands(
   nhCmd
     .subcommand('.popular', '查看当前的热门漫画')
     .alias('nh热门', 'nhpopular', 'nh popular')
-    .usage('获取 nhentai 当前的热门漫画列表。此指令为 `nh.search "" -s popular` 的快捷方式。')
+    .usage('获取 nhentai 当前的热门漫画列表。此指令为 `nh.search -s popular` 的快捷方式。')
     .example('nh.popular')
     .action(async ({ session }) => {
-      return session.execute('nh.search -s popular ""')
+      return session.execute('nh.search -s popular')
     })
 }
 

@@ -31,3 +31,16 @@ export async function importESM<T = any>(moduleName: string): Promise<T> {
     throw new Error(`无法加载模块 ${moduleName}: ${error.message}`)
   }
 }
+
+/**
+ * 统一的错误日志记录函数。
+ * @param context 操作上下文描述
+ * @param identifier 相关标识符（如 ID、查询等）
+ * @param error 错误对象
+ */
+export function logError(context: string, identifier: string | number, error: any): void {
+  const errorMessage = error.response?.body
+    ? JSON.stringify(error.response.body)
+    : error.message || String(error)
+  logger.error(`${context} ${identifier} 失败: ${errorMessage}`)
+}

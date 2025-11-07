@@ -1,6 +1,6 @@
 ﻿import { Context } from 'koishi'
 import { Config } from '../config'
-import { logger, importESM } from '../utils'
+import { logger, importESM, logError } from '../utils'
 import { API_BASE } from '../constants'
 import { Gallery, SearchResult } from '../types'
 import { InMemoryCache } from './cache'
@@ -222,7 +222,7 @@ export class ApiService {
 
       return data
     } catch (error) {
-      logger.error(`请求画廊 ${id} 失败: %s`, JSON.stringify(error.response?.body || error.message))
+      logError('请求画廊', id, error)
       return null
     }
   }
@@ -273,7 +273,7 @@ export class ApiService {
 
       return data
     } catch (error) {
-      logger.error(`搜索 "${query}" 失败: %s`, JSON.stringify(error.response?.body || error.message))
+      logError('搜索', `"${query}"`, error)
       return null
     }
   }
