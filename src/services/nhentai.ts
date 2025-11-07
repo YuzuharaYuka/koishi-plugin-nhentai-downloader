@@ -19,50 +19,6 @@ export type DownloadOutput =
   | { type: 'zip'; buffer: Buffer; filename: string }
   | { type: 'images'; images: any[]; filename: string; failedIndexes: number[] }
 
-export class GalleryService {
-  constructor(
-    private config: Config,
-    private apiService: ApiService,
-  ) {}
-
-  async getGallery(id: string): Promise<Gallery | null> {
-    return this.apiService.getGallery(id)
-  }
-
-  async searchGalleries(query: string, page = 1, sort?: string) {
-    return this.apiService.searchGalleries(query, page, sort)
-  }
-
-  async getRandomGalleryId(): Promise<string | null> {
-    try {
-      const got = this.apiService.imageGot
-      if (!got) {
-        throw new Error('ImageGot 未初始化')
-      }
-
-      const response = await got.get('https://nhentai.net/random', {
-        throwHttpErrors: false,
-        timeout: { request: this.config.downloadTimeout * 1000 },
-      })
-
-      const finalUrl = response.url
-      const match = finalUrl.match(/\/g\/(\d+)/)
-
-      if (!match || !match[1]) {
-        throw new Error(`无法从最终 URL (${finalUrl}) 中解析画廊ID`)
-      }
-
-      const randomId = match[1]
-      if (this.config.debug) logger.info(`获取到随机画廊ID: ${randomId}`)
-
-      return randomId
-    } catch (error) {
-      logger.error(`获取随机画廊ID时出错: ${error.message}`)
-      return null
-    }
-  }
-}
-
 export class CoverService {
   constructor(
     private config: Config,
@@ -145,7 +101,6 @@ export class CoverService {
 }
 
 export class NhentaiService {
-  private galleryService: GalleryService
   private coverService: CoverService
   private downloadManager: DownloadManager
 
@@ -154,13 +109,12 @@ export class NhentaiService {
     private config: Config,
     private processor: Processor,
   ) {
-    this.galleryService = new GalleryService(config, apiService)
     this.coverService = new CoverService(config, apiService, processor)
-    this.downloadManager = new DownloadManager(config, apiService, this.galleryService, processor)
+    this.downloadManager = new DownloadManager(config, apiService, processor)
   }
 
   async getGalleryWithCover(id: string): Promise<GalleryWithCover | null> {
-    const gallery = await this.galleryService.getGallery(id)
+    const gallery = await this.apiService.getGallery(id)
     if (!gallery) return null
 
     const cover = await this.coverService.downloadCover(gallery)
@@ -174,7 +128,32 @@ export class NhentaiService {
   }
 
   async getRandomGalleryId(): Promise<string | null> {
-    return this.galleryService.getRandomGalleryId()
+    try {
+      const got = this.apiService.imageGot
+      if (!got) {
+        throw new Error('ImageGot 未初始化')
+      }
+
+      const response = await got.get('https://nhentai.net/random', {
+        throwHttpErrors: false,
+        timeout: { request: this.config.downloadTimeout * 1000 },
+      })
+
+      const finalUrl = response.url
+      const match = finalUrl.match(/\/g\/(\d+)/)
+
+      if (!match || !match[1]) {
+        throw new Error(`无法从最终 URL (${finalUrl}) 中解析画廊ID`)
+      }
+
+      const randomId = match[1]
+      if (this.config.debug) logger.info(`获取到随机画廊ID: ${randomId}`)
+
+      return randomId
+    } catch (error) {
+      logger.error(`获取随机画廊ID时出错: ${error.message}`)
+      return null
+    }
   }
 
   async downloadGallery(

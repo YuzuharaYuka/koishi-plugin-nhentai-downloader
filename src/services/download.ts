@@ -4,7 +4,6 @@ import { IMAGE_HOST_PRIMARY, imageExtMap } from '../constants'
 import { Processor, DownloadedImage } from '../processor'
 import type { Gallery } from '../types'
 import { ApiService } from './api'
-import { GalleryService } from './nhentai'
 import type { DownloadOutput } from './nhentai'
 
 interface ImageUrl {
@@ -218,7 +217,6 @@ export class DownloadManager {
   constructor(
     private config: Config,
     private apiService: ApiService,
-    private galleryService: GalleryService,
     private processor: Processor,
   ) {
     this.streamProcessor = new StreamProcessor(config, apiService, processor)
@@ -230,7 +228,7 @@ export class DownloadManager {
     password?: string,
     onProgress: (status: string) => Promise<void> = async () => {},
   ): Promise<DownloadOutput | { error: string }> {
-    const gallery = await this.galleryService.getGallery(id)
+    const gallery = await this.apiService.getGallery(id)
     if (!gallery) {
       return { error: `获取画廊 ${id} 信息失败，请检查ID或链接是否正确。` }
     }
@@ -271,22 +269,17 @@ export class DownloadManager {
   ): Promise<DownloadOutput | { error: string }> {
     const images: DownloadedImage[] = []
     const failedIndexes: number[] = []
-    let lastProgressUpdate = 0
 
-    const throttledUpdate = async (processed: number, total: number) => {
-      const now = Date.now()
-      if (now - lastProgressUpdate > 1500) {
-        await onProgress(`正在下载图片: ${processed} / ${total} ...`)
-        lastProgressUpdate = now
-      }
-    }
+    const throttledUpdate = createThrottledProgressUpdate(onProgress)
 
     try {
       for await (const image of this.streamProcessor.createImageStream(
         galleryId,
         mediaId,
         imageUrls,
-        throttledUpdate,
+        async (processed, total) => {
+          await throttledUpdate(0, processed, total)
+        },
       )) {
         images.push(image)
       }

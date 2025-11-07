@@ -8,7 +8,8 @@
 
 ## 功能特性
 
-- 搜索功能 - 支持关键词搜索、ID 查询，可按热门度排序，可按语言筛选
+- 搜索功能 - 支持关键词搜索、ID 查询，可按热门度排序，可按语言筛选（支持中文、日语、英语）
+- 图片菜单 - 搜索结果以图片网格形式展示，直观查看封面
 - 交互操作 - 搜索结果支持多页浏览和翻页，回复序号发起下载任务
 - 多格式输出 - 支持 PDF、ZIP 压缩包、逐张图片三种输出方式
 - 文件加密 - 支持为 PDF 和 ZIP 文件设置密码保护（ZIP 使用 AES-256 加密）
@@ -105,6 +106,9 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 | `searchResultLimit` | `number` | `10` | 搜索结果每页显示数量 (1-25) |
 | `showTagsInSearch` | `boolean` | `true` | 在搜索结果中显示作品标签 |
 | `showLinkInSearch` | `boolean` | `true` | 在搜索结果中附加 nhentai 链接 |
+| `enableImageMenu` | `boolean` | `true` | 将搜索结果以图片菜单形式展示 |
+| `imageMenuColumns` | `number` | `3` | 图片菜单每行显示的画廊数量 (1-5) |
+| `imageMenuMaxRows` | `number` | `3` | 图片菜单最大行数 (1-5) |
 
 ---
 

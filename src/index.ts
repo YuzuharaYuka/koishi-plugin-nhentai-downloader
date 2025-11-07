@@ -137,11 +137,18 @@ export function apply(ctx: Context, config: Config) {
   })
 }
 
-async function checkAndClearCaches(currentConfig: Config, previousConfig: Config | null): Promise<void> {
-  const apiCacheDisabled = previousConfig
-    ? (previousConfig.cache.enableApiCache && !currentConfig.cache.enableApiCache)
-    : !currentConfig.cache.enableApiCache
+async function clearCacheDirectory(cacheType: string, cachePath: string): Promise<void> {
+  logger.info(`检测到${cacheType}缓存已关闭，正在清理磁盘缓存...`)
+  try {
+    const { promises: fs } = await import('fs')
+    await fs.rm(cachePath, { recursive: true, force: true })
+    logger.info(`${cacheType}缓存目录已清理: ${cachePath}`)
+  } catch (error) {
+    logger.warn(`清理${cacheType}缓存目录失败: ${error.message}`)
+  }
+}
 
+async function checkAndClearCaches(currentConfig: Config, previousConfig: Config | null): Promise<void> {
   const imageCacheDisabled = previousConfig
     ? (previousConfig.cache.enableImageCache && !currentConfig.cache.enableImageCache)
     : !currentConfig.cache.enableImageCache
@@ -150,35 +157,18 @@ async function checkAndClearCaches(currentConfig: Config, previousConfig: Config
     ? ((previousConfig.cache.enablePdfCache ?? false) && !currentConfig.cache.enablePdfCache)
     : false
 
-  if (apiCacheDisabled) {
-    logger.info('检测到 API 缓存已关闭，正在清理内存缓存...')
-  }
+  if (imageCacheDisabled || pdfCacheDisabled) {
+    const path = await import('path')
+    const baseDir = process.cwd()
 
-  if (imageCacheDisabled) {
-    logger.info('检测到图片缓存已关闭，正在清理磁盘缓存...')
-    try {
-      const { promises: fs } = await import('fs')
-      const path = await import('path')
-      const baseDir = process.cwd()
+    if (imageCacheDisabled) {
       const cacheDir = path.resolve(baseDir, currentConfig.downloadPath, 'image-cache')
-      await fs.rm(cacheDir, { recursive: true, force: true })
-      logger.info(`图片缓存目录已清理: ${cacheDir}`)
-    } catch (error) {
-      logger.warn(`清理图片缓存目录失败: ${error.message}`)
+      await clearCacheDirectory('图片', cacheDir)
     }
-  }
 
-  if (pdfCacheDisabled) {
-    logger.info('检测到 PDF 缓存已关闭，正在清理磁盘缓存...')
-    try {
-      const { promises: fs } = await import('fs')
-      const path = await import('path')
-      const baseDir = process.cwd()
+    if (pdfCacheDisabled) {
       const cacheDir = path.resolve(baseDir, currentConfig.downloadPath, 'pdf-cache')
-      await fs.rm(cacheDir, { recursive: true, force: true })
-      logger.info(`PDF 缓存目录已清理: ${cacheDir}`)
-    } catch (error) {
-      logger.warn(`清理 PDF 缓存目录失败: ${error.message}`)
+      await clearCacheDirectory('PDF', cacheDir)
     }
   }
 

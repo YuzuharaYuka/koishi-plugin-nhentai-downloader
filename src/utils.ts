@@ -24,9 +24,7 @@ export function bufferToDataURI(buffer: Buffer, mime = 'image/jpeg'): string {
  */
 export async function importESM<T = any>(moduleName: string): Promise<T> {
   try {
-    const importFn = new Function('specifier', 'return import(specifier)')
-    const module = await importFn(moduleName)
-
+    const module = await import(moduleName)
     return (module.default ?? module) as T
   } catch (error) {
     logger.error(`导入模块 "${moduleName}" 失败: ${error.message}`)

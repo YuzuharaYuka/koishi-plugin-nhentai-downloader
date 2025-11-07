@@ -5,6 +5,7 @@ import { Gallery, SearchResult, Tag } from './types'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
+import { FORWARD_SUPPORTED_PLATFORMS, TAG_DISPLAY_LIMIT } from './constants'
 import { readFile, rm } from 'fs/promises'
 import { pathToFileURL } from 'url'
 
@@ -26,8 +27,6 @@ export interface SearchHandlerOptions {
   useForward?: boolean
   forwardSupportedPlatforms?: string[]
 }
-
-const FORWARD_SUPPORTED_PLATFORMS = ['qq', 'onebot']
 
 export const tagTypeDisplayMap: Record<Tag['type'], string> = {
   parody: '🎭 原作',
@@ -67,7 +66,6 @@ export function formatGalleryInfo(
 ): h {
   const { showTags = true, showLink = true } = options
   const infoLines: string[] = []
-  const TAG_LIMIT = 8
 
   let title = '📘 '
   if (typeof displayIndex === 'number') title += `【${displayIndex + 1}】 `
@@ -95,8 +93,8 @@ export function formatGalleryInfo(
 
         if (key === 'language') {
           names = names.map(name => name.replace(/\b\w/g, l => l.toUpperCase()))
-        } else if (key === 'tag' && names.length > TAG_LIMIT) {
-          names = [...names.slice(0, TAG_LIMIT), '...']
+        } else if (key === 'tag' && names.length > TAG_DISPLAY_LIMIT) {
+          names = [...names.slice(0, TAG_DISPLAY_LIMIT), '...']
         }
 
         infoLines.push(`${tagTypeDisplayMap[key]}: ${names.join(', ')}`)
@@ -128,14 +126,169 @@ export function buildSearchQuery(
   return baseQuery
 }
 
+/**
+ * 分页管理器：处理搜索结果的分页逻辑
+ */
+interface PaginationState {
+  allResults: Partial<Gallery>[]
+  totalApiPages: number
+  fetchedApiPage: number
+  currentDisplayPage: number
+}
+
+function createPaginationState(initialResult: SearchResult): PaginationState {
+  return {
+    allResults: initialResult.result,
+    totalApiPages: initialResult.num_pages,
+    fetchedApiPage: 1,
+    currentDisplayPage: 1,
+  }
+}
+
+async function fetchMoreResults(
+  state: PaginationState,
+  effectiveQuery: string,
+  sort: SearchOptions['sort'],
+  apiService: ApiService,
+): Promise<boolean> {
+  const result = await apiService.searchGalleries(effectiveQuery, state.fetchedApiPage + 1, sort)
+  if (!result?.result.length) return false
+  state.allResults.push(...result.result)
+  if (result.num_pages > state.totalApiPages) state.totalApiPages = result.num_pages
+  state.fetchedApiPage++
+  return true
+}
+
+function buildPromptMessage(currentPage: number, totalPages: number): string {
+  const prompts = ['回复序号下载']
+  if (currentPage > 1) prompts.push('[B]上一页')
+  if (currentPage < totalPages) prompts.push('[F]下一页')
+  prompts.push('[N]退出')
+  return prompts.join('，') + '。'
+}
+
+async function handlePagination(
+  session: Session,
+  query: string,
+  initialResult: SearchResult,
+  effectiveQuery: string,
+  sort: SearchOptions['sort'],
+  limit: number,
+  apiService: ApiService,
+  config: Config,
+  displayHandler: (
+    displayedResults: Partial<Gallery>[],
+    startIndex: number,
+    totalResults: number
+  ) => Promise<void>,
+  onDownload: (galleryId: string) => Promise<void>,
+  onCleanup?: () => void,
+): Promise<void> {
+  const state = createPaginationState(initialResult)
+
+  while (true) {
+    const startIndex = (state.currentDisplayPage - 1) * limit
+    const endIndex = startIndex + limit
+
+    while (endIndex > state.allResults.length && state.fetchedApiPage < state.totalApiPages) {
+      await session.send(
+        h('quote', { id: session.messageId }) +
+          `正在加载更多结果 (第 ${state.fetchedApiPage + 1} / ${state.totalApiPages} API页)...`,
+      )
+      await fetchMoreResults(state, effectiveQuery, sort, apiService)
+    }
+
+    const displayedResults = state.allResults.slice(startIndex, endIndex)
+
+    if (displayedResults.length === 0) {
+      if (state.currentDisplayPage > 1) {
+        await session.send('没有更多结果了。')
+        state.currentDisplayPage--
+        continue
+      } else {
+        await session.send(`未找到与"${query}"相关的漫画。`)
+        break
+      }
+    }
+
+    await displayHandler(displayedResults, startIndex, initialResult.num_pages * initialResult.per_page)
+
+    const totalDisplayPages = Math.ceil(state.allResults.length / limit)
+    await session.send(buildPromptMessage(state.currentDisplayPage, totalDisplayPages))
+
+    const reply = await session.prompt(config.promptTimeout * 1000)
+    if (!reply) {
+      await session.send('操作超时，已自动取消。')
+      if (onCleanup) onCleanup()
+      break
+    }
+
+    const action = await handleUserInput(
+      reply,
+      state,
+      displayedResults,
+      totalDisplayPages,
+      session,
+      onDownload,
+    )
+
+    if (action === 'break') {
+      if (onCleanup) onCleanup()
+      break
+    }
+  }
+}
+
+async function handleUserInput(
+  reply: string,
+  state: PaginationState,
+  displayedResults: Partial<Gallery>[],
+  totalDisplayPages: number,
+  session: Session,
+  onDownload: (galleryId: string) => Promise<void>,
+): Promise<'continue' | 'break'> {
+  const lowerReply = reply.toLowerCase()
+
+  if (lowerReply === 'n') {
+    await session.send('操作已取消。')
+    return 'break'
+  }
+
+  if (lowerReply === 'f' && state.currentDisplayPage < totalDisplayPages) {
+    state.currentDisplayPage++
+    return 'continue'
+  }
+
+  if (lowerReply === 'b' && state.currentDisplayPage > 1) {
+    state.currentDisplayPage--
+    return 'continue'
+  }
+
+  if (/^\d+$/.test(reply)) {
+    const selectedIndex = parseInt(reply, 10) - 1
+    if (selectedIndex >= 0 && selectedIndex < displayedResults.length) {
+      const gallery = displayedResults[selectedIndex]
+      if (gallery?.id) {
+        await onDownload(gallery.id)
+        return 'break'
+      }
+    }
+    await session.send('无效的选择。')
+    return 'continue'
+  }
+
+  await session.send('无效的输入，已退出交互。')
+  return 'break'
+}
+
 export async function handleIdSearch(
   session: Session,
   id: string,
   nhentaiService: NhentaiService,
   config: Config,
-  options: SearchHandlerOptions = {},
+  options: SearchHandlerOptions & { promptDownload?: boolean } = {},
 ): Promise<void> {
-  const { useForward = true, forwardSupportedPlatforms = ['qq', 'onebot'] } = options
+  const { useForward = true, forwardSupportedPlatforms = FORWARD_SUPPORTED_PLATFORMS, promptDownload = false } = options
 
   const result = await nhentaiService.getGalleryWithCover(id)
   if (!result) {
@@ -154,6 +307,18 @@ export async function handleIdSearch(
   }
 
   await sendWithOptionalForward(session, messageContent, useForward, forwardSupportedPlatforms)
+
+  if (promptDownload) {
+    await session.send(`是否下载 ID ${id} 的漫画? [Y/N]`)
+    const reply = await session.prompt(config.promptTimeout * 1000)
+    if (!reply) {
+      await session.send('操作超时，已自动取消。')
+    } else if (reply.toLowerCase() === 'y') {
+      await session.execute(`nh.download ${id}`)
+    } else {
+      await session.send('操作已取消。')
+    }
+  }
 }
 
 export async function handleKeywordSearchWithMenu(
@@ -178,94 +343,27 @@ export async function handleKeywordSearchWithMenu(
   }
 
   try {
-    let allResults: Partial<Gallery>[] = initialResult.result
-    let totalApiPages = initialResult.num_pages
-    let fetchedApiPage = 1
-    let currentDisplayPage = 1
-
-    const fetchApiPage = async (apiPageNum: number) => {
-      const result = await apiService.searchGalleries(effectiveQuery, apiPageNum, sort)
-      if (!result?.result.length) return false
-      allResults.push(...result.result)
-      if (result.num_pages > totalApiPages) totalApiPages = result.num_pages
-      fetchedApiPage = apiPageNum
-      return true
-    }
-
-    while (true) {
-      const startIndex = (currentDisplayPage - 1) * limit
-      const endIndex = startIndex + limit
-
-      while (endIndex > allResults.length && fetchedApiPage < totalApiPages) {
-        await session.send(
-          h('quote', { id: session.messageId }) +
-            `正在加载更多结果 (第 ${fetchedApiPage + 1} / ${totalApiPages} API页)...`,
-        )
-        await fetchApiPage(fetchedApiPage + 1)
-      }
-
-      const displayedResults = allResults.slice(startIndex, endIndex)
-
-      if (displayedResults.length === 0) {
-        await session.send(currentDisplayPage > 1 ? '没有更多结果了。' : `未找到与"${query}"相关的漫画。`)
-        if (currentDisplayPage > 1) currentDisplayPage--
-        else break
-        continue
-      }
-
-      // 使用图片菜单显示搜索结果
-      await menuService.sendSearchMenu(
-        session,
-        displayedResults,
-        initialResult.num_pages * initialResult.per_page
-      )
-
-      const totalDisplayPages = Math.ceil(allResults.length / limit)
-      const prompts = ['回复序号下载']
-      if (currentDisplayPage > 1) prompts.push('[B]上一页')
-      if (currentDisplayPage < totalDisplayPages) prompts.push('[F]下一页')
-      prompts.push('[N]退出')
-      await session.send(prompts.join('，') + '。')
-
-      const reply = await session.prompt(config.promptTimeout * 1000)
-      if (!reply) {
-        await session.send('操作超时，已自动取消。')
+    await handlePagination(
+      session,
+      query,
+      initialResult,
+      effectiveQuery,
+      sort,
+      limit,
+      apiService,
+      config,
+      async (displayedResults, _startIndex, totalResults) => {
+        await menuService.sendSearchMenu(session, displayedResults, totalResults)
+      },
+      async (galleryId) => {
         menuService.clearMenu(session)
-        break
-      }
-
-      const lowerReply = reply.toLowerCase()
-      if (lowerReply === 'n') {
-        await session.send('操作已取消。')
-        menuService.clearMenu(session)
-        break
-      } else if (lowerReply === 'f' && currentDisplayPage < totalDisplayPages) {
-        currentDisplayPage++
-      } else if (lowerReply === 'b' && currentDisplayPage > 1) {
-        currentDisplayPage--
-      } else if (/^\d+$/.test(reply)) {
-        const selectedIndex = parseInt(reply, 10) - 1
-        if (selectedIndex >= 0 && selectedIndex < displayedResults.length) {
-          const gallery = displayedResults[selectedIndex]
-          if (gallery?.id) {
-            menuService.clearMenu(session)
-            await session.execute(`nh.download ${gallery.id}`)
-            return
-          }
-        }
-        await session.send('无效的选择。')
-      } else {
-        await session.send('无效的输入，已退出交互。')
-        menuService.clearMenu(session)
-        break
-      }
-    }
-
+        await session.execute(`nh.download ${galleryId}`)
+      },
+      () => menuService.clearMenu(session),
+    )
   } catch (error) {
     logger.error(`图片菜单处理失败: ${error.message}`)
     await session.send('菜单生成失败，将使用传统模式显示搜索结果。')
-
-    // 降级到传统搜索模式
     await handleKeywordSearch(session, query, options, apiService, nhentaiService, config)
   }
 }
@@ -281,7 +379,7 @@ export async function handleKeywordSearch(
 ): Promise<void> {
   const {
     useForward = true,
-    forwardSupportedPlatforms = ['qq', 'onebot'],
+    forwardSupportedPlatforms = FORWARD_SUPPORTED_PLATFORMS,
     showTags = true,
     showLink = true,
   } = handlerOptions
@@ -298,95 +396,39 @@ export async function handleKeywordSearch(
     return
   }
 
-  let allResults: Partial<Gallery>[] = initialResult.result
-  let totalApiPages = initialResult.num_pages
-  let fetchedApiPage = 1
-  let currentDisplayPage = 1
-
-  const fetchApiPage = async (apiPageNum: number) => {
-    const result = await apiService.searchGalleries(effectiveQuery, apiPageNum, sort)
-    if (!result?.result.length) return false
-    allResults.push(...result.result)
-    if (result.num_pages > totalApiPages) totalApiPages = result.num_pages
-    fetchedApiPage = apiPageNum
-    return true
-  }
-
-  while (true) {
-    const startIndex = (currentDisplayPage - 1) * limit
-    const endIndex = startIndex + limit
-
-    while (endIndex > allResults.length && fetchedApiPage < totalApiPages) {
-      await session.send(
-        h('quote', { id: session.messageId }) +
-          `正在加载更多结果 (第 ${fetchedApiPage + 1} / ${totalApiPages} API页)...`,
-      )
-      await fetchApiPage(fetchedApiPage + 1)
-    }
-
-    const displayedResults = allResults.slice(startIndex, endIndex)
-
-    if (displayedResults.length === 0) {
-      await session.send(currentDisplayPage > 1 ? '没有更多结果了。' : `未找到与"${query}"相关的漫画。`)
-      if (currentDisplayPage > 1) currentDisplayPage--
-      else break
-      continue
-    }
-
-    const covers = await nhentaiService.getCoversForGalleries(displayedResults)
-    const messageNodes = displayedResults.map((gallery, index) => {
-      const galleryInfoNode = formatGalleryInfo(gallery, index, { showTags, showLink })
-      const cover = covers.get(gallery.id as string)
-      const messageNode = h('message', {}, galleryInfoNode)
-      if (cover) {
-        messageNode.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
-      }
-      return messageNode
-    })
-
-    const totalDisplayPages = Math.ceil(allResults.length / limit)
-    const headerText = `共约 ${initialResult.num_pages * initialResult.per_page} 个结果, 当前显示 ${startIndex + 1}-${
-      startIndex + displayedResults.length
-    } (第 ${currentDisplayPage} / ${totalDisplayPages} 页)`
-    const header = h('message', {}, h('p', headerText))
-
-    await sendWithOptionalForward(session, [header, ...messageNodes], useForward, forwardSupportedPlatforms)
-
-    const prompts = ['回复序号下载']
-    if (currentDisplayPage > 1) prompts.push('[B]上一页')
-    if (currentDisplayPage < totalDisplayPages) prompts.push('[F]下一页')
-    prompts.push('[N]退出')
-    await session.send(prompts.join('，') + '。')
-
-    const reply = await session.prompt(config.promptTimeout * 1000)
-    if (!reply) {
-      await session.send('操作超时，已自动取消。')
-      break
-    }
-
-    const lowerReply = reply.toLowerCase()
-    if (lowerReply === 'n') {
-      await session.send('操作已取消。')
-      break
-    } else if (lowerReply === 'f' && currentDisplayPage < totalDisplayPages) {
-      currentDisplayPage++
-    } else if (lowerReply === 'b' && currentDisplayPage > 1) {
-      currentDisplayPage--
-    } else if (/^\d+$/.test(reply)) {
-      const selectedIndex = parseInt(reply, 10) - 1
-      if (selectedIndex >= 0 && selectedIndex < displayedResults.length) {
-        const gallery = displayedResults[selectedIndex]
-        if (gallery?.id) {
-          await session.execute(`nh.download ${gallery.id}`)
-          return
+  await handlePagination(
+    session,
+    query,
+    initialResult,
+    effectiveQuery,
+    sort,
+    limit,
+    apiService,
+    config,
+    async (displayedResults, startIndex, totalResults) => {
+      const covers = await nhentaiService.getCoversForGalleries(displayedResults)
+      const messageNodes = displayedResults.map((gallery, index) => {
+        const galleryInfoNode = formatGalleryInfo(gallery, index, { showTags, showLink })
+        const cover = covers.get(gallery.id as string)
+        const messageNode = h('message', {}, galleryInfoNode)
+        if (cover) {
+          messageNode.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
         }
-      }
-      await session.send('无效的选择。')
-    } else {
-      await session.send('无效的输入，已退出交互。')
-      break
-    }
-  }
+        return messageNode
+      })
+
+      const totalDisplayPages = Math.ceil(totalResults / limit)
+      const headerText = `共约 ${totalResults} 个结果, 当前显示 ${startIndex + 1}-${
+        startIndex + displayedResults.length
+      } (第 ${Math.floor(startIndex / limit) + 1} / ${totalDisplayPages} 页)`
+      const header = h('message', {}, h('p', headerText))
+
+      await sendWithOptionalForward(session, [header, ...messageNodes], useForward, forwardSupportedPlatforms)
+    },
+    async (galleryId) => {
+      await session.execute(`nh.download ${galleryId}`)
+    },
+  )
 }
 
 export async function handleDownloadCommand(

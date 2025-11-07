@@ -10,10 +10,7 @@ import { ImageCache, PdfCache } from './services/cache'
 import { WasmImageProcessor, DownloadedImage, ProcessedImage } from './processors/types'
 import { initWasmProcessor, ensureWasmLoaded } from './processors/wasm'
 import {
-  convertImageForMode,
-  conditionallyCompressJpeg,
   applyAntiGzip as applyAntiGzipHelper,
-  batchApplyAntiGzip as batchApplyAntiGzipHelper,
   downloadImage as downloadImageHelper,
 } from './processors/images'
 import { createZip as createZipHelper } from './processors/zip'
@@ -67,38 +64,8 @@ export class Processor {
     return this.imageCache
   }
 
-  public applyAntiGzip(buffer: Buffer, identifier?: string): { buffer: Buffer; format: string } {
+  applyAntiGzip(buffer: Buffer, identifier?: string): { buffer: Buffer; format: string } {
     return applyAntiGzipHelper(this.wasm, buffer, this.config, identifier)
-  }
-
-  public batchApplyAntiGzip(images: Array<{ buffer: Buffer; identifier?: string }>): Array<{ buffer: Buffer; format: string }> {
-    return batchApplyAntiGzipHelper(this.wasm, images, this.config)
-  }
-
-  public async convertImageForMode(
-    buffer: Buffer,
-    format: string,
-    mode: 'pdf' | 'zip' | 'image',
-  ): Promise<{ buffer: Buffer; finalFormat: string }> {
-    return convertImageForMode(this.wasm, buffer, format, mode, this.config)
-  }
-
-  public async conditionallyCompressJpeg(
-    buffer: Buffer,
-    format: string,
-    threshold: number,
-    quality: number,
-    enableCompression: boolean,
-  ): Promise<Buffer> {
-    return conditionallyCompressJpeg(
-      this.wasm,
-      buffer,
-      format,
-      threshold,
-      quality,
-      enableCompression,
-      this.config.debug,
-    )
   }
 
   async downloadImage(

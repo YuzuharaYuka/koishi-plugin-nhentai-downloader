@@ -6,7 +6,7 @@ import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
 import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, SearchOptions } from './handlers'
 import { handleDownloadCommand, DownloadOptions } from './handlers'
-import { galleryUrlRegex } from './constants'
+import { galleryUrlRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
 
 async function deleteStatusMessage(session: Session, statusMsgId: string | undefined): Promise<void> {
   if (statusMsgId) {
@@ -15,18 +15,6 @@ async function deleteStatusMessage(session: Session, statusMsgId: string | undef
     } catch (error) {
       logger.debug('删除状态消息失败:', error)
     }
-  }
-}
-
-async function promptForDownload(session: Session, id: string, promptTimeout: number): Promise<void> {
-  await session.send(`是否下载 ID ${id} 的漫画? [Y/N]`)
-  const reply = await session.prompt(promptTimeout * 1000)
-  if (!reply) {
-    await session.send('操作超时，已自动取消。')
-  } else if (reply.toLowerCase() === 'y') {
-    await session.execute(`nh.download ${id}`)
-  } else {
-    await session.send('操作已取消。')
   }
 }
 
@@ -65,13 +53,11 @@ export function registerSearchCommands(
       const nhentaiService = getNhentaiService()
       const menuService = getMenuService()
 
-      const validSorts = ['popular', 'popular-today', 'popular-week']
-      const validLangs = ['chinese', 'japanese', 'english', 'all']
-      if (options.sort && !validSorts.includes(options.sort)) {
-        return session.send(`无效的排序选项。可用值: ${validSorts.join(', ')}`)
+      if (options.sort && !VALID_SORT_OPTIONS.includes(options.sort)) {
+        return session.send(`无效的排序选项。可用值: ${VALID_SORT_OPTIONS.join(', ')}`)
       }
-      if (options.lang && !validLangs.includes(options.lang)) {
-        return session.send(`无效的语言选项。可用值: ${validLangs.join(', ')}`)
+      if (options.lang && !VALID_LANG_OPTIONS.includes(options.lang)) {
+        return session.send(`无效的语言选项。可用值: ${VALID_LANG_OPTIONS.join(', ')}`)
       }
 
       // 提示: nhentai API 对 popular-today 和 popular-week 的支持可能不稳定
@@ -85,13 +71,7 @@ export function registerSearchCommands(
       }
 
       const effectiveLang = searchOptions.lang || config.defaultSearchLanguage
-      const langDisplayMap = {
-        'chinese': '中文',
-        'japanese': '日语',
-        'english': '英语',
-        'all': ''
-      }
-      const langDisplay = langDisplayMap[effectiveLang]
+      const langDisplay = LANGUAGE_DISPLAY_MAP[effectiveLang]
       const searchMessage = langDisplay
         ? `正在搜索 ${query}...（语言：${langDisplay}）`
         : `正在搜索 ${query}...`
@@ -103,8 +83,8 @@ export function registerSearchCommands(
             useForward: config.useForwardForSearch,
             showTags: config.showTagsInSearch,
             showLink: config.showLinkInSearch,
+            promptDownload: true,
           })
-          await promptForDownload(session, query, config.promptTimeout)
         } else {
           // 根据配置选择使用图片菜单还是传统模式
           if (config.enableImageMenu && menuService) {
@@ -201,9 +181,8 @@ export function registerRandomCommands(
           useForward: config.useForwardForSearch,
           showTags: config.showTagsInSearch,
           showLink: config.showLinkInSearch,
+          promptDownload: true,
         })
-
-        await promptForDownload(session, randomId, config.promptTimeout)
       } catch (error) {
         logger.error(`[随机] 命令执行失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
