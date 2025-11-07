@@ -120,13 +120,27 @@ export function apply(ctx: Context, config: Config) {
 
     ctx.on('ready', async () => {
       try {
-        await checkAndClearCaches(config, previousConfig)
+        await checkAndClearCaches(ctx, config, previousConfig)
         await plugin.initialize()
         previousConfig = { ...config }
         if (config.debug) logger.info('插件初始化完成')
       } catch (error) {
-        logger.error('插件初始化失败:', error)
-        throw error
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        logger.error('插件初始化失败，插件将无法使用')
+        logger.error('错误详情:', errorMessage)
+
+        if (errorMessage.includes('WASM module not found')) {
+          logger.error('WASM 模块未找到。可能的原因:')
+          logger.error('1. 插件未完整安装，请尝试重新安装')
+          logger.error('2. 如果是从源码构建，请运行: yarn build 或 yarn build:wasm')
+          logger.error('3. 检查 wasm-dist 目录是否存在于插件目录中')
+        } else if (errorMessage.includes('got-scraping')) {
+          logger.error('网络请求模块加载失败，请检查网络连接或重新安装插件')
+        } else {
+          logger.error('请检查日志并报告问题到: https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/issues')
+        }
+
+        // 不抛出错误，避免导致 Koishi 崩溃
       }
     })
 
@@ -141,14 +155,26 @@ async function clearCacheDirectory(cacheType: string, cachePath: string): Promis
   logger.info(`检测到${cacheType}缓存已关闭，正在清理磁盘缓存...`)
   try {
     const { promises: fs } = await import('fs')
+    const { access } = await import('fs/promises')
+
+    // 先检查目录是否存在
+    try {
+      await access(cachePath)
+    } catch {
+      // 目录不存在，无需清理
+      if (logger.level <= 1) logger.debug(`${cacheType}缓存目录不存在，跳过清理: ${cachePath}`)
+      return
+    }
+
     await fs.rm(cachePath, { recursive: true, force: true })
     logger.info(`${cacheType}缓存目录已清理: ${cachePath}`)
   } catch (error) {
-    logger.warn(`清理${cacheType}缓存目录失败: ${error.message}`)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    logger.warn(`清理${cacheType}缓存目录失败: ${errorMessage}`)
   }
 }
 
-async function checkAndClearCaches(currentConfig: Config, previousConfig: Config | null): Promise<void> {
+async function checkAndClearCaches(ctx: Context, currentConfig: Config, previousConfig: Config | null): Promise<void> {
   const imageCacheDisabled = previousConfig
     ? (previousConfig.cache.enableImageCache && !currentConfig.cache.enableImageCache)
     : !currentConfig.cache.enableImageCache
@@ -159,7 +185,7 @@ async function checkAndClearCaches(currentConfig: Config, previousConfig: Config
 
   if (imageCacheDisabled || pdfCacheDisabled) {
     const path = await import('path')
-    const baseDir = process.cwd()
+    const baseDir = ctx.baseDir
 
     if (imageCacheDisabled) {
       const cacheDir = path.resolve(baseDir, currentConfig.downloadPath, 'image-cache')
@@ -172,15 +198,24 @@ async function checkAndClearCaches(currentConfig: Config, previousConfig: Config
     }
   }
 
-  await cleanTempFiles(currentConfig)
+  await cleanTempFiles(ctx, currentConfig)
 }
 
-async function cleanTempFiles(config: Config): Promise<void> {
+async function cleanTempFiles(ctx: Context, config: Config): Promise<void> {
   try {
     const { promises: fs } = await import('fs')
+    const { access } = await import('fs/promises')
     const path = await import('path')
-    const baseDir = process.cwd()
+    const baseDir = ctx.baseDir
     const downloadDir = path.resolve(baseDir, config.downloadPath)
+
+    // 检查下载目录是否存在
+    try {
+      await access(downloadDir)
+    } catch {
+      if (config.debug) logger.info(`下载目录不存在，跳过清理: ${downloadDir}`)
+      return
+    }
 
     const entries = await fs.readdir(downloadDir, { withFileTypes: true })
     let cleanedCount = 0
@@ -191,14 +226,16 @@ async function cleanTempFiles(config: Config): Promise<void> {
           await fs.unlink(path.join(downloadDir, entry.name))
           cleanedCount++
         } catch (err) {
-          if (config.debug) logger.warn(`删除临时文件失败 ${entry.name}: ${err.message}`)
+          const errorMessage = err instanceof Error ? err.message : String(err)
+          if (config.debug) logger.warn(`删除临时文件失败 ${entry.name}: ${errorMessage}`)
         }
       } else if (entry.isDirectory() && entry.name.startsWith('temp_pdf_')) {
         try {
           await fs.rm(path.join(downloadDir, entry.name), { recursive: true, force: true })
           cleanedCount++
         } catch (err) {
-          if (config.debug) logger.warn(`删除临时目录失败 ${entry.name}: ${err.message}`)
+          const errorMessage = err instanceof Error ? err.message : String(err)
+          if (config.debug) logger.warn(`删除临时目录失败 ${entry.name}: ${errorMessage}`)
         }
       }
     }
@@ -207,6 +244,7 @@ async function cleanTempFiles(config: Config): Promise<void> {
       logger.info(`已清理 ${cleanedCount} 个临时文件/目录`)
     }
   } catch (error) {
-    if (config.debug) logger.warn(`清理临时文件时出错: ${error.message}`)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    if (config.debug) logger.warn(`清理临时文件时出错: ${errorMessage}`)
   }
 }

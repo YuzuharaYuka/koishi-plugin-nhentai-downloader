@@ -29,7 +29,15 @@ export class Processor {
   private successfulHosts: Map<string, string> = new Map()
 
   constructor(private ctx: Context, private config: Config) {
-    this.wasm = ensureWasmLoaded()
+    // 延迟加载 WASM，避免在构造函数中抛出异常
+    try {
+      this.wasm = ensureWasmLoaded()
+    } catch (error) {
+      // 如果 WASM 未加载，记录错误但不中断构造
+      // 实际使用时会在相关方法中再次检查
+      throw new Error(`WASM 模块未初始化: ${error.message}`)
+    }
+
     if (this.config.cache.enableImageCache) {
       this.imageCache = new ImageCache(this.config, this.ctx.app.baseDir)
     }
@@ -62,7 +70,7 @@ export class Processor {
    */
   getImageCache(): ImageCache | null {
     return this.imageCache
-  }
+  } 
 
   applyAntiGzip(buffer: Buffer, identifier?: string): { buffer: Buffer; format: string } {
     return applyAntiGzipHelper(this.wasm, buffer, this.config, identifier)

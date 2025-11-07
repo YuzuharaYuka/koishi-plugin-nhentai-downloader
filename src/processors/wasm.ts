@@ -24,40 +24,69 @@ export async function initWasmProcessor(): Promise<void> {
       path.join(__dirname, '../wasm-dist/wasm_image_processor.js'), // 生产环境路径（打包后 lib/index.js）
       path.join(__dirname, '../../wasm-dist/wasm_image_processor.js'), // 开发环境路径 1（lib/processors/wasm.js）
       path.join(__dirname, '../../../wasm-dist/wasm_image_processor.js'), // 开发环境路径 2
-      path.resolve(process.cwd(), 'external/nhentai-downloader/wasm-dist/wasm_image_processor.js'), // 开发环境路径 3
+      path.join(process.cwd(), 'external', 'nhentai-downloader', 'wasm-dist', 'wasm_image_processor.js'), // 开发环境路径 3
+      // 添加 npm 安装后的标准路径（适用于插件市场安装）
+      path.join(__dirname, '../../../wasm-dist/wasm_image_processor.js'),
+      path.join(__dirname, '../../../../koishi-plugin-nhentai-downloader/wasm-dist/wasm_image_processor.js'),
     ]
 
-    const wasmJsPath = searchPaths.find((p) => fs.existsSync(p))
+    const wasmJsPath = searchPaths.find((p) => {
+      try {
+        return fs.existsSync(p)
+      } catch {
+        return false
+      }
+    })
 
     if (!wasmJsPath) {
-      throw new Error(
+      const errorMsg =
         'WASM module not found. Please ensure the plugin is properly installed.\n' +
-          'If building from source, run: yarn build:wasm\n' +
-          `Tried paths:\n${searchPaths.join('\n')}`,
-      )
+        'If building from source, run: yarn build:wasm\n' +
+        `Tried paths:\n${searchPaths.map((p, i) => `[${i + 1}] ${p}`).join('\n')}`
+      logger.error(errorMsg)
+      // 不抛出异常，而是让调用方处理
+      throw new Error(errorMsg)
     }
 
     logger.debug(`找到 WASM 模块: ${wasmJsPath}`)
 
-    // 切换工作目录以确保 WASM 能正确加载其依赖
+    // 使用 require 加载模块，避免修改全局 cwd
     const wasmDir = path.dirname(wasmJsPath)
-    const originalCwd = process.cwd()
-    try {
-      process.chdir(wasmDir)
+    let wasm: any
 
-      delete require.cache[wasmJsPath] // 清除缓存以支持热重载
-      const wasm = require(wasmJsPath)
+    try {
+      delete require.cache[wasmJsPath]
+
+      // 保存原始模块搜索路径
+      const originalPaths = [...(require.main?.paths || [])]
+
+      // 临时添加 WASM 目录到搜索路径
+      if (require.main?.paths) {
+        require.main.paths.unshift(wasmDir)
+      }
+
+      try {
+        wasm = require(wasmJsPath)
+      } finally {
+        // 恢复原始搜索路径
+        if (require.main?.paths) {
+          require.main.paths = originalPaths
+        }
+      }
 
       if (typeof wasm.init === 'function') {
         wasm.init()
       }
 
       wasmModule = wasm as WasmImageProcessor
-    } finally {
-      process.chdir(originalCwd) // 恢复原始工作目录
+      logger.debug('WASM 模块加载成功')
+    } catch (loadError) {
+      logger.error(`WASM 模块加载失败: ${loadError.message}`)
+      throw new Error(`Failed to load WASM module from ${wasmJsPath}: ${loadError.message}`)
     }
   } catch (error) {
-    throw new Error(`Failed to initialize WASM processor: ${error.message}`)
+    logger.error(`WASM 处理器初始化失败: ${error.message}`)
+    throw error
   }
 }
 
