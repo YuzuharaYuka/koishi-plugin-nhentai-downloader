@@ -14,10 +14,17 @@ export interface GalleryWithCover {
   }
 }
 
+export interface DownloadedImage {
+  path?: string
+  buffer?: Buffer
+  extension: string
+  index: number
+}
+
 export type DownloadOutput =
   | { type: 'pdf'; path: string; filename: string; isTemporary: boolean }
   | { type: 'zip'; buffer: Buffer; filename: string }
-  | { type: 'images'; images: any[]; filename: string; failedIndexes: number[] }
+  | { type: 'images'; images: DownloadedImage[]; filename: string; failedIndexes: number[] }
 
 export class CoverService {
   constructor(
@@ -26,6 +33,20 @@ export class CoverService {
     private processor: Processor,
   ) {}
 
+  private buildThumbUrl(gallery: Partial<Gallery>): string {
+    const thumb = gallery.images?.thumbnail
+    return `https://${THUMB_HOST_PRIMARY}/galleries/${gallery.media_id}/thumb.${imageExtMap[thumb?.t || ''] || 'jpg'}`
+  }
+
+  private processDownloadResult(result: any, galleryId: string): { buffer: Buffer; extension: string } | null {
+    if ('buffer' in result) {
+      const processed = this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`)
+      const extension = processed.format === 'webp' ? 'webp' : result.extension
+      return { buffer: processed.buffer, extension }
+    }
+    return null
+  }
+
   async downloadCover(
     gallery: Gallery,
   ): Promise<{ buffer: Buffer; extension: string } | null> {
@@ -33,7 +54,7 @@ export class CoverService {
     if (!thumb || !gallery.media_id) return null
 
     try {
-      const thumbUrl = `https://${THUMB_HOST_PRIMARY}/galleries/${gallery.media_id}/thumb.${imageExtMap[thumb.t] || 'jpg'}`
+      const thumbUrl = this.buildThumbUrl(gallery)
       const result = await this.processor.downloadImage(
         this.apiService.imageGot,
         thumbUrl,
@@ -43,13 +64,7 @@ export class CoverService {
         1,
       )
 
-      if ('buffer' in result) {
-        const processed = this.processor.applyAntiGzip(result.buffer, `thumb-${gallery.id}`)
-        const extension = processed.format === 'webp' ? 'webp' : result.extension
-        return { buffer: processed.buffer, extension }
-      }
-
-      return null
+      return this.processDownloadResult(result, gallery.id)
     } catch (e) {
       logger.warn(`下载画廊 ${gallery.id} 的缩略图失败: ${e.message}`)
       return null
@@ -72,9 +87,7 @@ export class CoverService {
         if (!gallery?.id || !gallery.media_id || !gallery.images?.thumbnail) continue
 
         try {
-          const thumb = gallery.images.thumbnail
-          const thumbUrl = `https://${THUMB_HOST_PRIMARY}/galleries/${gallery.media_id}/thumb.${imageExtMap[thumb.t] || 'jpg'}`
-
+          const thumbUrl = this.buildThumbUrl(gallery)
           const result = await this.processor.downloadImage(
             this.apiService.imageGot,
             thumbUrl,
@@ -84,10 +97,9 @@ export class CoverService {
             1,
           )
 
-          if ('buffer' in result) {
-            const processed = this.processor.applyAntiGzip(result.buffer, `thumb-${gallery.id}`)
-            const extension = processed.format === 'webp' ? 'webp' : result.extension
-            covers.set(gallery.id as string, { buffer: processed.buffer, extension })
+          const processed = this.processDownloadResult(result, gallery.id as string)
+          if (processed) {
+            covers.set(gallery.id as string, processed)
           }
         } catch (itemError) {
           logger.error(`处理画廊 ${gallery?.id} 缩略图时出错: ${itemError.message}`)
@@ -130,25 +142,18 @@ export class NhentaiService {
   async getRandomGalleryId(): Promise<string | null> {
     try {
       const got = this.apiService.imageGot
-      if (!got) {
-        throw new Error('ImageGot 未初始化')
-      }
+      if (!got) throw new Error('ImageGot 未初始化')
 
       const response = await got.get('https://nhentai.net/random', {
         throwHttpErrors: false,
         timeout: { request: this.config.downloadTimeout * 1000 },
       })
 
-      const finalUrl = response.url
-      const match = finalUrl.match(/\/g\/(\d+)/)
-
-      if (!match || !match[1]) {
-        throw new Error(`无法从最终 URL (${finalUrl}) 中解析画廊ID`)
-      }
+      const match = response.url.match(/\/g\/(\d+)/)
+      if (!match?.[1]) throw new Error(`无法从最终 URL (${response.url}) 中解析画廊ID`)
 
       const randomId = match[1]
       if (this.config.debug) logger.info(`获取到随机画廊ID: ${randomId}`)
-
       return randomId
     } catch (error) {
       logger.error(`获取随机画廊ID时出错: ${error.message}`)

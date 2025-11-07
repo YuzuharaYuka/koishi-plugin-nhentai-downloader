@@ -111,21 +111,13 @@ export function buildSearchQuery(
   lang: SearchOptions['lang'],
 ): string {
   const baseQuery = query.trim()
-
-  if (baseQuery.includes('language:') || baseQuery.includes('汉化')) {
-    return baseQuery
-  }
-
-  if (lang && lang !== 'all') {
-    return `${baseQuery} language:${lang}`.trim()
-  }
-
-  return baseQuery
+  // 已有语言过滤则直接返回
+  if (baseQuery.includes('language:') || baseQuery.includes('汉化')) return baseQuery
+  // 未指定或指定 'all' 则不添加语言过滤
+  return (lang && lang !== 'all') ? `${baseQuery} language:${lang}`.trim() : baseQuery
 }
 
-/**
- * 分页管理器：处理搜索结果的分页逻辑
- */
+// 分页管理器：处理搜索结果的分页逻辑
 interface PaginationState {
   allResults: Partial<Gallery>[]
   totalApiPages: number
@@ -228,9 +220,7 @@ async function handlePagination(
 
     await displayHandler(displayedResults, startIndex, initialResult.num_pages * initialResult.per_page)
 
-    const totalResults = initialResult.num_pages * initialResult.per_page
-    const totalDisplayPages = Math.ceil(totalResults / limit)
-    const actualEndIndex = Math.min(endIndex, state.allResults.length)
+    const totalResults = initialResult.num_pages * initialResult.per_page, totalDisplayPages = Math.ceil(totalResults / limit), actualEndIndex = Math.min(endIndex, state.allResults.length)
     await session.send(buildPromptMessage(
       state.currentDisplayPage,
       totalDisplayPages,
@@ -351,10 +341,7 @@ export async function handleKeywordSearchWithMenu(
   menuService: MenuService,
   config: Config,
 ): Promise<void> {
-  const sort = options.sort
-  const lang = options.lang || config.defaultSearchLanguage
-  const limit = config.imageMenuColumns * config.imageMenuMaxRows
-
+  const sort = options.sort, lang = options.lang || config.defaultSearchLanguage, limit = config.imageMenuColumns * config.imageMenuMaxRows
   const effectiveQuery = buildSearchQuery(query, lang)
   const initialResult = await apiService.searchGalleries(effectiveQuery, 1, sort)
 
@@ -405,10 +392,7 @@ export async function handleKeywordSearch(
     showLink = true,
   } = handlerOptions
 
-  const limit = config.searchResultLimit > 0 ? config.searchResultLimit : 10
-  const sort = options.sort
-  const lang = options.lang || config.defaultSearchLanguage
-
+  const limit = config.searchResultLimit > 0 ? config.searchResultLimit : 10, sort = options.sort, lang = options.lang || config.defaultSearchLanguage
   const effectiveQuery = buildSearchQuery(query, lang)
   const initialResult = await apiService.searchGalleries(effectiveQuery, 1, sort)
 
@@ -460,27 +444,12 @@ export async function handleDownloadCommand(
   nhentaiService: NhentaiService,
   config: Config,
 ): Promise<void> {
-  let tempPdfPath: string | undefined
-  let shouldCleanupPdf = false
+  let tempPdfPath: string | undefined, shouldCleanupPdf = false
 
   try {
-    let outputType: 'zip' | 'pdf' | 'img' = config.defaultOutput
-    if (options.pdf) outputType = 'pdf'
-    else if (options.zip) outputType = 'zip'
-    else if (options.image) outputType = 'img'
-    const password = options.key || config.defaultPassword
+    const outputType: 'zip' | 'pdf' | 'img' = options.pdf ? 'pdf' : options.zip ? 'zip' : options.image ? 'img' : config.defaultOutput, password = options.key || config.defaultPassword
 
-    const updateStatus = async (text: string) => {
-      if (typeof session.bot.editMessage === 'function') {
-        try {
-          await session.bot.editMessage(session.channelId, statusMessageId, text)
-        } catch (error) {
-          if (config.debug) logger.warn('编辑状态消息失败 (忽略): %o', error)
-        }
-      }
-    }
-
-    const result = await nhentaiService.downloadGallery(id, outputType, password, updateStatus)
+    const result = await nhentaiService.downloadGallery(id, outputType, password)
 
     if ('error' in result) {
       await session.send(result.error)
@@ -509,8 +478,7 @@ export async function handleDownloadCommand(
         break
 
       case 'images':
-        const useForward = config.useForwardForDownload && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform)
-        const imageElements = result.images
+        const useForward = config.useForwardForDownload && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform), imageElements = result.images
 
         if (useForward) {
           const imageMessages = imageElements.map((item) =>

@@ -11,6 +11,12 @@ interface ImageUrl {
   index: number
 }
 
+// 扩展的下载图片类型，用于缓存处理结果
+interface CachedDownloadedImage extends DownloadedImage {
+  processedBuffer?: Buffer // 缓存的处理后缓冲区
+  finalFormat?: string // 最终格式
+}
+
 function createThrottledProgressUpdate(
   onProgress: (status: string) => Promise<void>,
   intervalMs: number = 1500,
@@ -37,11 +43,28 @@ export class StreamProcessor {
     private processor: Processor,
   ) {}
 
+  private lastFailedIndexes: number[] = [] // 存储最后一次流生成的失败索引
+
   generateImageUrls(gallery: Gallery): ImageUrl[] {
     return gallery.images.pages.map((p, i) => ({
       url: `https://${IMAGE_HOST_PRIMARY}/galleries/${gallery.media_id}/${i + 1}.${imageExtMap[p.t] || 'jpg'}`,
       index: i,
     }))
+  }
+
+  // 获取最后一次下载的失败索引
+  getLastFailedIndexes(): number[] {
+    return this.lastFailedIndexes
+  }
+
+  // 处理下载的图片，应用 antiGzip 并返回处理后的结果
+  private processDownloadedImage(result: DownloadedImage, galleryId: string): DownloadedImage {
+    const processed = this.processor.applyAntiGzip(result.buffer, `${galleryId}-page-${result.index + 1}`)
+    return {
+      ...result,
+      buffer: processed.buffer,
+      extension: processed.format === 'webp' ? 'webp' : result.extension,
+    }
   }
 
   async *createImageStream(
@@ -77,16 +100,8 @@ export class StreamProcessor {
           if (onProgress) await onProgress(processedCount, imageUrls.length)
 
           if ('buffer' in result) {
-            const processed = this.processor.applyAntiGzip(
-              result.buffer,
-              `${galleryId}-page-${result.index + 1}`,
-            )
-            const updatedResult = {
-              ...result,
-              buffer: processed.buffer,
-              extension: processed.format === 'webp' ? 'webp' : result.extension
-            }
-            downloadedImages.set(result.index, updatedResult)
+            const processedImage = this.processDownloadedImage(result, galleryId)
+            downloadedImages.set(result.index, processedImage)
           } else {
             failedIndexes.push(item.index)
           }
@@ -125,7 +140,8 @@ export class StreamProcessor {
 
     await Promise.all(workerPromises)
 
-    // 添加下载完成日志
+    // 保存失败索引供后续使用，并记录日志
+    this.lastFailedIndexes = failedIndexes
     const successCount = processedCount - failedIndexes.length
     logger.info(`图片下载完成: ${successCount}/${imageUrls.length} 成功${failedIndexes.length > 0 ? `, ${failedIndexes.length} 失败` : ''}`)
   }
@@ -137,7 +153,7 @@ export class StreamProcessor {
     onProgress?: (downloaded: number, processed: number, total: number) => Promise<void>,
   ): AsyncGenerator<DownloadedImage> {
     const downloadQueue = [...imageUrls]
-    const processedBuffer = new Map<number, DownloadedImage>()
+    const processedBuffer = new Map<number, CachedDownloadedImage>()
 
     let nextYieldIndex = 0
     let downloadedCount = 0
@@ -172,15 +188,16 @@ export class StreamProcessor {
 
           if ('buffer' in result) {
             successCount++
+            const cachedImage: CachedDownloadedImage = { ...result }
             if (imageCache) {
               const cachedProcessed = await imageCache.getProcessed(galleryId, mediaId, result.index)
               if (cachedProcessed) {
-                ;(result as any).processedBuffer = cachedProcessed.buffer
-                ;(result as any).finalFormat = cachedProcessed.extension
+                cachedImage.processedBuffer = cachedProcessed.buffer
+                cachedImage.finalFormat = cachedProcessed.extension
                 if (this.config.debug) logger.info(`处理缓存命中: 图片 ${result.index + 1} (gid: ${galleryId})`)
               }
             }
-            processedBuffer.set(result.index, result)
+            processedBuffer.set(result.index, cachedImage)
           }
         } catch (error) {
           logger.warn(`下载图片 ${item.index + 1} 失败: ${error.message}`)
@@ -190,24 +207,37 @@ export class StreamProcessor {
 
     const downloadWorkers = Array.from({ length: this.config.downloadConcurrency }, downloadWorker)
 
-    Promise.all(downloadWorkers).then(() => {
+    // 使用 Promise 来跟踪所有下载工作完成
+    const downloadPromise = Promise.all(downloadWorkers)
+
+    // 等待下载完成，同时产出已准备好的图片
+    let yielded = 0
+    const downloadCompleted = downloadPromise.then(() => {
       allDownloaded = true
       const failedCount = downloadedCount - successCount
       logger.info(`图片下载完成: ${successCount}/${imageUrls.length} 成功${failedCount > 0 ? `, ${failedCount} 失败` : ''} (${((successCount / imageUrls.length) * 100).toFixed(1)}%)`)
     })
 
-    while (!allDownloaded || processedBuffer.size > 0) {
+    // 产出图片直到所有下载完成且缓冲区为空
+    while (yielded < imageUrls.length) {
       if (processedBuffer.has(nextYieldIndex)) {
         const image = processedBuffer.get(nextYieldIndex)!
         processedBuffer.delete(nextYieldIndex)
         yield image
         nextYieldIndex++
+        yielded++
       } else {
         await sleep(50)
+        // 检查是否所有工作都已完成但仍有缺失的图片
+        if (allDownloaded && yielded < imageUrls.length && !processedBuffer.has(nextYieldIndex)) {
+          logger.warn(`跳过未能下载的图片 ${nextYieldIndex + 1}`)
+          nextYieldIndex++
+          yielded++
+        }
       }
     }
 
-    await Promise.all(downloadWorkers)
+    await downloadCompleted
   }
 }
 
@@ -268,8 +298,6 @@ export class DownloadManager {
     onProgress: (status: string) => Promise<void>,
   ): Promise<DownloadOutput | { error: string }> {
     const images: DownloadedImage[] = []
-    const failedIndexes: number[] = []
-
     const throttledUpdate = createThrottledProgressUpdate(onProgress)
 
     try {
@@ -292,7 +320,7 @@ export class DownloadManager {
         type: 'images',
         images,
         filename,
-        failedIndexes,
+        failedIndexes: this.streamProcessor.getLastFailedIndexes(), // 从streamProcessor中获取失败索引
       }
     } catch (error) {
       return handleDownloadError(error, '下载图片')

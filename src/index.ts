@@ -123,7 +123,7 @@ export function apply(ctx: Context, config: Config) {
         await checkAndClearCaches(ctx, config, previousConfig)
         await plugin.initialize()
         previousConfig = { ...config }
-        if (config.debug) logger.info('插件初始化完成')
+        logger.info('插件初始化完成')
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         logger.error('插件初始化失败，插件将无法使用')

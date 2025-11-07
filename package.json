@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-nhentai-downloader",
   "description": "nhentai 漫画插件，提供搜索、下载、打包发送漫画作品的功能，支持 PDF/ZIP 加密",
-  "version": "1.3.7",
+  "version": "1.3.8",
   "author": "YuzuharaYuka",
   "homepage": "https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader",
   "repository": {
@@ -22,8 +22,6 @@
     "build": "npm run build:wasm && npm run build:ts",
     "build:ts": "tsc",
     "build:wasm": "cd wasm-image-processor && cross-env RUSTFLAGS=\"-C target-feature=+simd128 --cfg getrandom_backend=\\\"wasm_js\\\"\" wasm-pack build --target nodejs --release --out-dir ../wasm-dist && node ../scripts/post-wasm-build.js",
-    "build:wasm:unix": "cd wasm-image-processor && sh build.sh",
-    "build:wasm:win": "cd wasm-image-processor && build.bat",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

@@ -20,7 +20,7 @@ export class GotManager {
 
   async initialize(): Promise<void> {
     if (this.initialized) return
-
+    // 动态导入 got-scraping 模块
     if (!gotScraping) {
       const module = await importESM<{ gotScraping: GotScraping }>('got-scraping')
       gotScraping = module.gotScraping || (module as any)
@@ -30,9 +30,7 @@ export class GotManager {
     this.imageGot = await this.createImageGotInstance()
     this.initialized = true
 
-    if (this.config.debug) {
-      logger.info('Got 初始化完成')
-    }
+    if (this.config.debug) logger.info('Got 初始化完成')
   }
 
   private async createApiGotInstance(): Promise<GotScraping> {
@@ -45,6 +43,7 @@ export class GotManager {
       timeout: downloadTimeoutMs,
       scheduling: 'lifo' as const,
     }
+    // 配置 HTTPS Agent，禁用证书验证和设置最低 TLS 版本
     const httpsAgent = new HttpsAgent({
       ...agentOptions,
       rejectUnauthorized: false,
@@ -84,9 +83,7 @@ export class GotManager {
   }
 
   private async createImageGotInstance(): Promise<GotScraping> {
-    if (!this.apiGot) {
-      throw new Error('GotManager: apiGot 必须先初始化')
-    }
+    if (!this.apiGot) throw new Error('GotManager: apiGot 必须先初始化')
 
     const downloadTimeoutMs = this.config.downloadTimeout * 1000
     const agentOptions = {
@@ -97,6 +94,7 @@ export class GotManager {
       timeout: downloadTimeoutMs,
       scheduling: 'lifo' as const,
     }
+    // 图片下载用的 Agent，连接数更多
     const imageHttpsAgent = new HttpsAgent({
       ...agentOptions,
       rejectUnauthorized: false,
@@ -135,7 +133,7 @@ export class GotManager {
         agent.https?.destroy()
       }
     }
-
+    // 销毁两个 Got 实例的连接池
     destroyAgent(this.apiGot)
     destroyAgent(this.imageGot)
 
@@ -144,9 +142,7 @@ export class GotManager {
     this.sessionTokens.clear()
     this.initialized = false
 
-    if (this.config.debug) {
-      logger.info('Got 实例已清理')
-    }
+    if (this.config.debug) logger.info('Got 实例已清理')
   }
 }
 
@@ -180,45 +176,45 @@ export class ApiService {
         maxSize: 500,
         defaultTTL: this.config.cache.apiCacheTTL * 60 * 1000,
       })
-      if (this.config.debug) {
-        logger.info('API 缓存已初始化')
-      }
+      if (this.config.debug) logger.info('API 缓存已初始化')
     }
     return this.cache
   }
 
+  // 从缓存获取数据
+  private async getCached<T>(key: string): Promise<T | null> {
+    if (!this.config.cache.enableApiCache) return null
+    const cached = await this.getCache().get<T>(key)
+    if (cached && this.config.debug) logger.info(`命中缓存: ${key}`)
+    return cached || null
+  }
+
+  // 保存数据到缓存
+  private async setCached<T>(key: string, data: T): Promise<void> {
+    if (!this.config.cache.enableApiCache) return
+    await this.getCache().set(key, data, this.config.cache.apiCacheTTL * 60 * 1000)
+  }
+
   async getGallery(id: string): Promise<Gallery | null> {
     const cacheKey = `nhentai:gallery:${id}`
-
-    if (this.config.cache.enableApiCache) {
-      const cache = this.getCache()
-      const cached = await cache.get<Gallery>(cacheKey)
-      if (cached) {
-        if (this.config.debug) logger.info(`命中画廊缓存: ${id}`)
-        return cached
-      }
-    }
+    // 检查缓存
+    const cached = await this.getCached<Gallery>(cacheKey)
+    if (cached) return cached
 
     try {
-      if (this.config.debug) logger.info(`请求画廊: ${id}`)
+      logger.info(`请求画廊: ${id}`)
 
       const url = `${API_BASE}/gallery/${id}`
       const data = await this.gotManager.apiGot!.get(url).json<Gallery>()
 
-      if (!data || typeof data.id === 'undefined') {
-        throw new Error('无效的API响应')
-      }
-
-      if (this.config.debug) logger.info(`获取画廊 ${id} 成功`)
+      if (!data || typeof data.id === 'undefined') throw new Error('无效的API响应')
+      logger.info(`获取画廊 ${id} 成功`)
 
       if (this.config.returnApiJson) {
         logger.info(`[API响应] 画廊 ${id}:\n${JSON.stringify(data, null, 2)}`)
       }
-
-      if (this.config.cache.enableApiCache) {
-        const cache = this.getCache()
-        await cache.set(cacheKey, data, this.config.cache.apiCacheTTL * 60 * 1000)
-      }
+      // 保存到缓存
+      await this.setCached(cacheKey, data)
 
       return data
     } catch (error) {
@@ -229,47 +225,36 @@ export class ApiService {
 
   async searchGalleries(query: string, page = 1, sort?: string): Promise<SearchResult | null> {
     const cacheKey = `nhentai:search:${query}:${page}:${sort || ''}`
-
-    if (this.config.cache.enableApiCache) {
-      const cache = this.getCache()
-      const cached = await cache.get<SearchResult>(cacheKey)
-      if (cached) {
-        if (this.config.debug) logger.info(`命中搜索缓存: "${query}" (第 ${page} 页)`)
-        return cached
-      }
-    }
+    // 检查缓存
+    const cached = await this.getCached<SearchResult>(cacheKey)
+    if (cached) return cached
 
     try {
-      // 规范化 sort 参数: API 端点可能只支持 'popular', 细分的时间范围参数可能被忽略
       let normalizedSort = sort
       if (sort && (sort === 'popular-today' || sort === 'popular-week' || sort === 'popular-month')) {
         if (this.config.debug) {
           logger.warn(`sort 参数 "${sort}" 可能不被 API 完全支持，将尝试原样传递`)
         }
-        // 保持原值，让 API 自行处理（可能会被忽略或降级为 popular）
         normalizedSort = sort
       }
 
-      if (this.config.debug) logger.info(`搜索: "${query}" (第 ${page} 页, sort: ${normalizedSort || '无'})`)
+      logger.info(`搜索: "${query}" (第 ${page} 页, sort: ${normalizedSort || '无'})`)
 
       const searchParams = new URLSearchParams({ query, page: page.toString() })
       if (normalizedSort) searchParams.set('sort', normalizedSort)
 
       const url = `${API_BASE}/galleries/search?${searchParams.toString()}`
-      if (this.config.debug) logger.info(`请求 URL: ${url}`)
+      logger.info(`请求 URL: ${url}`)
 
       const data = await this.gotManager.apiGot!.get(url).json<SearchResult>()
 
-      if (this.config.debug) logger.info(`搜索完成，找到 ${data.result.length} 个结果`)
+      logger.info(`搜索完成，找到 ${data.result.length} 个结果`)
 
       if (this.config.returnApiJson) {
         logger.info(`[API响应] 搜索 "${query}" (第 ${page} 页, ${sort || '默认排序'}):\n${JSON.stringify(data, null, 2)}`)
       }
-
-      if (this.config.cache.enableApiCache) {
-        const cache = this.getCache()
-        await cache.set(cacheKey, data, this.config.cache.apiCacheTTL * 60 * 1000)
-      }
+      // 保存到缓存
+      await this.setCached(cacheKey, data)
 
       return data
     } catch (error) {
@@ -279,6 +264,7 @@ export class ApiService {
   }
 
   dispose(): void {
+    // 销毁缓存实例
     if (this.cache) {
       this.cache.dispose()
       this.cache = null

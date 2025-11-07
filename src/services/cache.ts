@@ -1,18 +1,10 @@
-/**
- * 内存缓存实现，用于API响应缓存。
- */
-
-/**
- * 缓存配置接口
- */
+// 内存缓存实现，用于API响应缓存
 export interface CacheConfig {
   maxSize?: number // 最大缓存条目数
   defaultTTL?: number // 默认过期时间（毫秒）
 }
 
-/**
- * 内存缓存类，支持自动过期和大小限制。
- */
+// 支持自动过期和大小限制的内存缓存类
 export class InMemoryCache {
   private store = new Map<string, { value: any; timer?: NodeJS.Timeout; createdAt: number }>()
   private maxSize: number
@@ -23,18 +15,12 @@ export class InMemoryCache {
     this.defaultTTL = config.defaultTTL || 600000 // 默认10分钟
   }
 
-  /**
-   * 获取缓存值。
-   */
   async get<T>(key: string): Promise<T | undefined> {
     return this.store.get(key)?.value
   }
 
-  /**
-   * 设置缓存值。
-   */
   async set(key: string, value: any, maxAge?: number): Promise<void> {
-    // 如果缓存已满，清理最旧的条目
+    // 缓存已满则清理最旧条目
     if (this.store.size >= this.maxSize && !this.store.has(key)) {
       this.evictOldest()
     }
@@ -48,9 +34,6 @@ export class InMemoryCache {
     this.store.set(key, { value, timer, createdAt: Date.now() })
   }
 
-  /**
-   * 删除最旧的缓存条目。
-   */
   private evictOldest(): void {
     let oldestKey: string | null = null
     let oldestTime = Infinity
@@ -69,9 +52,6 @@ export class InMemoryCache {
     }
   }
 
-  /**
-   * 清空缓存。
-   */
   clear(): void {
     for (const { timer } of this.store.values()) {
       if (timer) clearTimeout(timer)
@@ -79,9 +59,6 @@ export class InMemoryCache {
     this.store.clear()
   }
 
-  /**
-   * 获取缓存统计信息。
-   */
   getStats() {
     return {
       size: this.store.size,
@@ -89,9 +66,6 @@ export class InMemoryCache {
     }
   }
 
-  /**
-   * 销毁缓存，清理所有定时器。
-   */
   dispose() {
     this.clear()
   }
@@ -116,20 +90,128 @@ interface CacheEntry {
   isThumb?: boolean
 }
 
-export class ImageCache {
-  private cacheDir: string
-  private indexFile: string
-  private entries: Map<string, CacheEntry> = new Map()
-  private maxCacheSize: number
-  private cacheTTL: number
-  private indexDirty: boolean = false
-  private saveTimer: NodeJS.Timeout | null = null
+// 缓存基类，提供通用的 LRU 清理、索引管理功能
+abstract class BaseCache<T extends { galleryId: string; filePath: string; cachedAt: number; lastAccessed: number; accessCount: number; size: number }> {
+  protected cacheDir: string
+  protected indexFile: string
+  protected entries: Map<string, T> = new Map()
+  protected maxCacheSize: number
+  protected cacheTTL: number
+  protected indexDirty: boolean = false
+  protected saveTimer: NodeJS.Timeout | null = null
 
-  constructor(private config: Config, baseDir: string) {
-    this.cacheDir = path.resolve(baseDir, config.downloadPath, 'image-cache')
+  constructor(protected config: Config, baseDir: string, cacheName: string, maxSizeConfig: number, ttlConfig: number) {
+    this.cacheDir = path.resolve(baseDir, config.downloadPath, cacheName)
     this.indexFile = path.resolve(this.cacheDir, 'index.json')
-    this.maxCacheSize = (config.cache.imageCacheMaxSize ?? 1000) * 1024 * 1024
-    this.cacheTTL = (config.cache.imageCacheTTL ?? 24) * 60 * 60 * 1000
+    this.maxCacheSize = maxSizeConfig
+    this.cacheTTL = ttlConfig
+  }
+
+  // 清理定时器
+  protected clearTimer(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+  }
+
+  // 调度索引保存
+  protected scheduleSaveIndex(): void {
+    this.indexDirty = true
+    this.clearTimer()
+    this.saveTimer = setTimeout(() => {
+      if (this.indexDirty) this.saveIndex().catch((err) => logger.warn(`延迟保存索引失败: ${err.message}`))
+      this.saveTimer = null
+    }, 5000)
+  }
+
+  // LRU 清理机制
+  protected async cleanupIfNeeded(newSize: number): Promise<void> {
+    let totalSize = Array.from(this.entries.values()).reduce((sum, entry) => sum + entry.size, 0)
+
+    if (totalSize + newSize > this.maxCacheSize) {
+      const sortedEntries = Array.from(this.entries.values()).sort((a, b) => {
+        const scoreA = a.lastAccessed + a.accessCount * 3600000
+        const scoreB = b.lastAccessed + b.accessCount * 3600000
+        return scoreA - scoreB
+      })
+
+      const targetSize = this.maxCacheSize * 0.7
+      let cleanedCount = 0
+      for (const entry of sortedEntries) {
+        if (totalSize + newSize <= targetSize) break
+        try {
+          await fs.unlink(entry.filePath)
+          this.deleteEntry(entry)
+          totalSize -= entry.size
+          cleanedCount++
+        } catch {
+          // 忽略文件不存在错误
+        }
+      }
+      if (this.config.debug && cleanedCount > 0) logger.info(`LRU 清理: 删除了 ${cleanedCount} 个条目`)
+      this.scheduleSaveIndex()
+    }
+  }
+
+  // 删除条目的抽象方法
+  protected abstract deleteEntry(entry: T): void
+
+  protected async saveIndex(entries?: T[]): Promise<void> {
+    try {
+      const data = JSON.stringify(entries || Array.from(this.entries.values()), null, 2)
+      await fs.writeFile(this.indexFile, data, 'utf-8')
+      this.indexDirty = false
+    } catch (error) {
+      logger.warn(`保存索引失败: ${error.message}`)
+    }
+  }
+
+  async clear(): Promise<void> {
+    for (const entry of this.entries.values()) {
+      try {
+        await fs.unlink(entry.filePath)
+      } catch {
+        // 忽略文件不存在错误
+      }
+    }
+    this.entries.clear()
+    this.scheduleSaveIndex()
+  }
+
+  async clearAll(): Promise<void> {
+    try {
+      await this.clear()
+      await fs.rm(this.cacheDir, { recursive: true, force: true })
+      if (this.config.debug) logger.info(`${this.cacheDir} 已清理`)
+    } catch (error) {
+      logger.warn(`清理缓存目录失败: ${error.message}`)
+    }
+  }
+
+  getStats(): { count: number; size: number } {
+    const totalSize = Array.from(this.entries.values()).reduce((sum, entry) => sum + entry.size, 0)
+    return { count: this.entries.size, size: totalSize }
+  }
+
+  async flush(): Promise<void> {
+    this.clearTimer()
+    if (this.indexDirty) await this.saveIndex()
+  }
+
+  dispose(): void {
+    this.clearTimer()
+    this.entries.clear()
+    this.indexDirty = false
+    if (this.config.debug) logger.info(`${this.cacheDir} 已清理`)
+  }
+}
+
+export class ImageCache extends BaseCache<CacheEntry> {
+  constructor(protected config: Config, baseDir: string) {
+    const maxSize = (config.cache.imageCacheMaxSize ?? 1000) * 1024 * 1024
+    const ttl = (config.cache.imageCacheTTL ?? 24) * 60 * 60 * 1000
+    super(config, baseDir, 'image-cache', maxSize, ttl)
   }
 
   async initialize(): Promise<void> {
@@ -160,6 +242,7 @@ export class ImageCache {
             await fs.unlink(entry.filePath).catch(() => {})
           }
         } catch {
+          // 忽略索引项加载错误
         }
       }
 
@@ -169,25 +252,6 @@ export class ImageCache {
       if (error.code !== 'ENOENT') logger.warn(`加载索引失败: ${error.message}`)
       this.entries.clear()
     }
-  }
-
-  private async saveIndex(entries?: CacheEntry[]): Promise<void> {
-    try {
-      const data = JSON.stringify(entries || Array.from(this.entries.values()), null, 2)
-      await fs.writeFile(this.indexFile, data, 'utf-8')
-      this.indexDirty = false
-    } catch (error) {
-      logger.warn(`保存索引失败: ${error.message}`)
-    }
-  }
-
-  private scheduleSaveIndex(): void {
-    this.indexDirty = true
-    if (this.saveTimer) clearTimeout(this.saveTimer)
-    this.saveTimer = setTimeout(() => {
-      if (this.indexDirty) this.saveIndex().catch((err) => logger.warn(`延迟保存索引失败: ${err.message}`))
-      this.saveTimer = null
-    }, 5000)
   }
 
   private getCacheKey(galleryId: string, mediaId: string, pageIndex: number, isThumb = false, processed = false): string {
@@ -316,6 +380,7 @@ export class ImageCache {
       try {
         await fs.unlink(entry.filePath)
       } catch {
+        // 忽略文件不存在错误
       }
       this.entries.delete(key)
       this.scheduleSaveIndex()
@@ -329,34 +394,9 @@ export class ImageCache {
       try {
         await fs.unlink(entry.filePath)
       } catch {
+        // 忽略文件不存在错误
       }
       this.entries.delete(key)
-      this.scheduleSaveIndex()
-    }
-  }
-
-  private async cleanupIfNeeded(newSize: number): Promise<void> {
-    let totalSize = Array.from(this.entries.values()).reduce((sum, entry) => sum + entry.size, 0)
-    if (totalSize + newSize > this.maxCacheSize) {
-      const sortedEntries = Array.from(this.entries.values()).sort((a, b) => {
-        const scoreA = a.lastAccessed + a.accessCount * 3600000
-        const scoreB = b.lastAccessed + b.accessCount * 3600000
-        return scoreA - scoreB
-      })
-
-      const targetSize = this.maxCacheSize * 0.7
-      let cleanedCount = 0
-      for (const entry of sortedEntries) {
-        if (totalSize + newSize <= targetSize) break
-        try {
-          await fs.unlink(entry.filePath)
-          this.entries.delete(this.getCacheKey(entry.galleryId, entry.mediaId, entry.pageIndex, entry.isThumb))
-          totalSize -= entry.size
-          cleanedCount++
-        } catch {
-        }
-      }
-      if (this.config.debug && cleanedCount > 0) logger.info(`LRU 清理：删除了 ${cleanedCount} 个缓存条目`)
       this.scheduleSaveIndex()
     }
   }
@@ -368,6 +408,7 @@ export class ImageCache {
         try {
           await fs.unlink(entry.filePath)
         } catch {
+          // 忽略文件不存在错误
         }
         keysToDelete.push(key)
       }
@@ -379,48 +420,8 @@ export class ImageCache {
     }
   }
 
-  async clear(): Promise<void> {
-    for (const entry of this.entries.values()) {
-      try {
-        await fs.unlink(entry.filePath)
-      } catch {
-      }
-    }
-    this.entries.clear()
-    this.scheduleSaveIndex()
-  }
-
-  async clearAll(): Promise<void> {
-    try {
-      await this.clear()
-      await fs.rm(this.cacheDir, { recursive: true, force: true })
-      logger.info('图片缓存目录已清理')
-    } catch (error) {
-      logger.warn(`清理图片缓存目录失败: ${error.message}`)
-    }
-  }
-
-  getStats(): { count: number; size: number } {
-    const totalSize = Array.from(this.entries.values()).reduce((sum, entry) => sum + entry.size, 0)
-    return { count: this.entries.size, size: totalSize }
-  }
-
-  async flush(): Promise<void> {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = null
-    }
-    if (this.indexDirty) await this.saveIndex()
-  }
-
-  public dispose(): void {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = null
-    }
-    this.entries.clear()
-    this.indexDirty = false
-    if (this.config.debug) logger.info('图片缓存已清理')
+  protected deleteEntry(entry: CacheEntry): void {
+    this.entries.delete(this.getCacheKey(entry.galleryId, entry.mediaId, entry.pageIndex, entry.isThumb))
   }
 }
 
@@ -435,20 +436,11 @@ interface PdfCacheEntry {
   password?: string
 }
 
-export class PdfCache {
-  private cacheDir: string
-  private indexFile: string
-  private entries: Map<string, PdfCacheEntry> = new Map()
-  private maxCacheSize: number
-  private cacheTTL: number
-  private indexDirty: boolean = false
-  private saveTimer: NodeJS.Timeout | null = null
-
-  constructor(private config: Config, baseDir: string) {
-    this.cacheDir = path.resolve(baseDir, config.downloadPath, 'pdf-cache')
-    this.indexFile = path.resolve(this.cacheDir, 'index.json')
-    this.maxCacheSize = config.cache.pdfCacheMaxSize * 1024 * 1024
-    this.cacheTTL = config.cache.pdfCacheTTL === 0 ? Infinity : config.cache.pdfCacheTTL * 60 * 60 * 1000
+export class PdfCache extends BaseCache<PdfCacheEntry> {
+  constructor(protected config: Config, baseDir: string) {
+    const maxSize = config.cache.pdfCacheMaxSize * 1024 * 1024
+    const ttl = config.cache.pdfCacheTTL === 0 ? Infinity : config.cache.pdfCacheTTL * 60 * 60 * 1000
+    super(config, baseDir, 'pdf-cache', maxSize, ttl)
   }
 
   async initialize(): Promise<void> {
@@ -483,6 +475,7 @@ export class PdfCache {
             await fs.unlink(entry.filePath).catch(() => {})
           }
         } catch {
+          // 忽略索引项加载错误
         }
       }
 
@@ -492,25 +485,6 @@ export class PdfCache {
       if (error.code !== 'ENOENT') logger.warn(`加载 PDF 索引失败: ${error.message}`)
       this.entries.clear()
     }
-  }
-
-  private async saveIndex(entries?: PdfCacheEntry[]): Promise<void> {
-    try {
-      const data = JSON.stringify(entries || Array.from(this.entries.values()), null, 2)
-      await fs.writeFile(this.indexFile, data, 'utf-8')
-      this.indexDirty = false
-    } catch (error) {
-      logger.warn(`保存 PDF 索引失败: ${error.message}`)
-    }
-  }
-
-  private scheduleSaveIndex(): void {
-    this.indexDirty = true
-    if (this.saveTimer) clearTimeout(this.saveTimer)
-    this.saveTimer = setTimeout(() => {
-      if (this.indexDirty) this.saveIndex().catch((err) => logger.warn(`延迟保存 PDF 索引失败: ${err.message}`))
-      this.saveTimer = null
-    }, 5000)
   }
 
   private getCacheKey(galleryId: string, password?: string): string {
@@ -591,83 +565,15 @@ export class PdfCache {
       try {
         await fs.unlink(entry.filePath)
       } catch {
+        // 忽略文件不存在错误
       }
       this.entries.delete(key)
       this.scheduleSaveIndex()
     }
   }
 
-  private async cleanupIfNeeded(newSize: number): Promise<void> {
-    let totalSize = Array.from(this.entries.values()).reduce((sum, entry) => sum + entry.size, 0)
-
-    if (totalSize + newSize > this.maxCacheSize) {
-      const sortedEntries = Array.from(this.entries.values()).sort((a, b) => {
-        const scoreA = a.lastAccessed + a.accessCount * 3600000
-        const scoreB = b.lastAccessed + b.accessCount * 3600000
-        return scoreA - scoreB
-      })
-
-      const targetSize = this.maxCacheSize * 0.7
-      let cleanedCount = 0
-      for (const entry of sortedEntries) {
-        if (totalSize + newSize <= targetSize) break
-        try {
-          await fs.unlink(entry.filePath)
-          this.entries.delete(this.getCacheKey(entry.galleryId, entry.password))
-          totalSize -= entry.size
-          cleanedCount++
-        } catch {
-        }
-      }
-      if (this.config.debug && cleanedCount > 0) {
-        logger.info(`LRU 清理：删除了 ${cleanedCount} 个 PDF 缓存条目`)
-      }
-      this.scheduleSaveIndex()
-    }
-  }
-
-  async clear(): Promise<void> {
-    for (const entry of this.entries.values()) {
-      try {
-        await fs.unlink(entry.filePath)
-      } catch {
-      }
-    }
-    this.entries.clear()
-    this.scheduleSaveIndex()
-  }
-
-  async clearAll(): Promise<void> {
-    try {
-      await this.clear()
-      await fs.rm(this.cacheDir, { recursive: true, force: true })
-      logger.info('PDF 缓存目录已清理')
-    } catch (error) {
-      logger.warn(`清理 PDF 缓存目录失败: ${error.message}`)
-    }
-  }
-
-  getStats(): { count: number; size: number } {
-    const totalSize = Array.from(this.entries.values()).reduce((sum, entry) => sum + entry.size, 0)
-    return { count: this.entries.size, size: totalSize }
-  }
-
-  async flush(): Promise<void> {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = null
-    }
-    if (this.indexDirty) await this.saveIndex()
-  }
-
-  public dispose(): void {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = null
-    }
-    this.entries.clear()
-    this.indexDirty = false
-    if (this.config.debug) logger.info('PDF 缓存已清理')
+  protected deleteEntry(entry: PdfCacheEntry): void {
+    this.entries.delete(this.getCacheKey(entry.galleryId, entry.password))
   }
 }
 

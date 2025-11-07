@@ -1,86 +1,37 @@
 #!/bin/bash
 
-# Build script for wasm-image-processor
-# High-performance Rust WASM module for image processing
+# Build script for wasm-image-processor: High-performance image processing WASM module
 
 set -e
 
 echo "🦀 Building WASM image processor..."
-echo ""
 
-# Check if wasm-pack is installed
-if ! command -v wasm-pack &> /dev/null; then
-    echo "❌ wasm-pack is not installed!"
-    echo ""
-    echo "Install it with:"
-    echo "  cargo install wasm-pack"
-    echo ""
-    exit 1
-fi
+# Check required tools
+check_command() {
+    if ! command -v "$1" &> /dev/null; then
+        echo "❌ $2 is not installed!"
+        return 1
+    fi
+}
 
-# Check if cargo is installed
-if ! command -v cargo &> /dev/null; then
-    echo "❌ Rust/Cargo is not installed!"
-    echo ""
-    echo "Install it with:"
-    echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-    echo ""
-    exit 1
-fi
+check_command "cargo" "Rust/Cargo" || exit 1
+check_command "wasm-pack" "wasm-pack" || exit 1
 
 # Display versions
-echo "📦 Tool versions:"
-rustc --version
-cargo --version
-wasm-pack --version
+echo "📦 Tools: $(rustc --version) | $(cargo --version) | $(wasm-pack --version)"
 echo ""
 
-# Build for Node.js target with optimizations and SIMD support
-echo "🔨 Compiling Rust to WASM (Node.js target with SIMD)..."
-echo ""
-
-# 设置 RUSTFLAGS 以启用 SIMD128 (准则 5: 性能优化)
+# Build with SIMD128 optimization
+echo "🔨 Compiling to WASM (Node.js target)..."
 export RUSTFLAGS="-C target-feature=+simd128"
 
-wasm-pack build \
-    --target nodejs \
-    --release \
-    --out-dir ../wasm-dist
+wasm-pack build --target nodejs --release --out-dir ../wasm-dist
 
 if [ $? -eq 0 ]; then
-    echo ""
     echo "✅ Build complete!"
-    echo ""
-
-    # Display package size
-    if [ -f "../wasm-dist/wasm_image_processor_bg.wasm" ]; then
-        if command -v stat &> /dev/null; then
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                SIZE=$(stat -f%z "../wasm-dist/wasm_image_processor_bg.wasm")
-            else
-                SIZE=$(stat -c%s "../wasm-dist/wasm_image_processor_bg.wasm")
-            fi
-            SIZE_KB=$((SIZE / 1024))
-            echo "📊 WASM binary size: ${SIZE_KB} KB"
-        fi
-    fi
-
-    echo ""
-    echo "🎉 WASM module is ready to use!"
-    echo "   Location: wasm-dist/"
-    echo ""
-    echo "Next steps:"
-    echo "  1. Run tests: npm test"
-    echo "  2. Build plugin: npm run build"
-    echo ""
+    [ -f "../wasm-dist/wasm_image_processor_bg.wasm" ] && echo "📊 WASM ready at: wasm-dist/"
 else
-    echo ""
-    echo "❌ Build failed!"
-    echo ""
-    echo "Common issues:"
-    echo "  1. Run: rustup target add wasm32-unknown-unknown"
-    echo "  2. Check Cargo.toml for errors"
-    echo "  3. Try: cargo clean && ./build.sh"
-    echo ""
+    echo "❌ Build failed! Try: cargo clean && ./build.sh"
     exit 1
 fi
+

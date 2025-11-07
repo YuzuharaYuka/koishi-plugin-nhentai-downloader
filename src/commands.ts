@@ -8,15 +8,6 @@ import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, Searc
 import { handleDownloadCommand, DownloadOptions } from './handlers'
 import { galleryUrlRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
 
-async function deleteStatusMessage(session: Session, statusMsgId: string | undefined): Promise<void> {
-  if (!statusMsgId) return
-  try {
-    await session.bot.deleteMessage(session.channelId, statusMsgId)
-  } catch (error) {
-    logger.debug('删除状态消息失败:', error)
-  }
-}
-
 export function registerSearchCommands(
   ctx: Context,
   config: Config,
@@ -44,10 +35,7 @@ export function registerSearchCommands(
     .action(async ({ session, options }, ...queryParts) => {
       if (!ensureInitialized(session)) return
 
-      // 将数组拼接成字符串
       const query = queryParts.join(' ').trim()
-
-      // 如果没有查询词且没有排序选项，返回错误
       if (!query && !options.sort) {
         return session.send('请输入搜索关键词或漫画ID。')
       }
@@ -63,7 +51,6 @@ export function registerSearchCommands(
         return session.send(`无效的语言选项。可用值: ${VALID_LANG_OPTIONS.join(', ')}`)
       }
 
-      // 提示: nhentai API 对 popular-today 和 popular-week 的支持可能不稳定
       if (options.sort && options.sort !== 'popular' && config.debug) {
         logger.warn(`使用 sort 参数: ${options.sort}, 注意 nhentai API 可能不完全支持此参数`)
       }
@@ -73,14 +60,12 @@ export function registerSearchCommands(
         lang: options.lang as SearchOptions['lang'],
       }
 
+      const displayQuery = query || '热门漫画'
       const effectiveLang = searchOptions.lang || config.defaultSearchLanguage
       const langDisplay = LANGUAGE_DISPLAY_MAP[effectiveLang]
-      const displayQuery = query || '热门漫画'
-      const searchMessage = langDisplay
-        ? `正在搜索 ${displayQuery}...（语言：${langDisplay}）`
-        : `正在搜索 ${displayQuery}...`
+      const searchMessage = `正在搜索 ${displayQuery}...${langDisplay ? `（语言：${langDisplay}）` : ''}`
 
-      const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + searchMessage)
+      await session.send(h('quote', { id: session.messageId }) + searchMessage)
       try {
         if (query && /^\d+$/.test(query)) {
           await handleIdSearch(session, query, nhentaiService, config, {
@@ -90,7 +75,6 @@ export function registerSearchCommands(
             promptDownload: true,
           })
         } else {
-          // 根据配置选择使用图片菜单还是传统模式
           if (config.enableImageMenu && menuService) {
             await handleKeywordSearchWithMenu(session, query, searchOptions, apiService, nhentaiService, menuService, config)
           } else {
@@ -104,8 +88,6 @@ export function registerSearchCommands(
       } catch (error) {
         logger.error(`[搜索] 命令执行失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
-      } finally {
-        await deleteStatusMessage(session, statusMessageId)
       }
     })
 
@@ -139,20 +121,17 @@ export function registerDownloadCommands(
       if (!idOrUrl) return session.send('请输入要下载的漫画ID或链接。')
 
       const nhentaiService = getNhentaiService()
-
       const match = idOrUrl.match(galleryUrlRegex)
       if (!match || !match[1]) return session.send('输入的ID或链接无效，请检查后重试。')
 
       const id = match[1]
-      const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + `正在解析画廊 ${id}...`)
+      await session.send(h('quote', { id: session.messageId }) + `正在解析画廊 ${id}...`)
 
       try {
-        await handleDownloadCommand(session, id, options as DownloadOptions, statusMessageId, nhentaiService, config)
+        await handleDownloadCommand(session, id, options as DownloadOptions, '', nhentaiService, config)
       } catch (error) {
         logger.error(`[下载] 任务 ID ${id} 失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
-      } finally {
-        await deleteStatusMessage(session, statusMessageId)
       }
     })
 }
@@ -173,7 +152,7 @@ export function registerRandomCommands(
       if (!ensureInitialized(session)) return
 
       const nhentaiService = getNhentaiService()
-      const [statusMessageId] = await session.send(h('quote', { id: session.messageId }) + '正在进行一次天降好运...')
+      await session.send(h('quote', { id: session.messageId }) + '正在进行一次天降好运...')
 
       try {
         const randomId = await nhentaiService.getRandomGalleryId()
@@ -190,8 +169,6 @@ export function registerRandomCommands(
       } catch (error) {
         logger.error(`[随机] 命令执行失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
-      } finally {
-        await deleteStatusMessage(session, statusMessageId)
       }
     })
 

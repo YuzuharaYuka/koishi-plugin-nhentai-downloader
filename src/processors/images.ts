@@ -6,9 +6,83 @@ import { logger, sleep } from '../utils'
 import { IMAGE_HOST_FALLBACK, THUMB_HOST_FALLBACK } from '../constants'
 import { ImageCache } from '../services/cache'
 
-/**
- * 根据输出模式转换图片格式。
- */
+// 辅助函数：从 URL 提取文件扩展名
+function getFileExtension(url: string): string {
+  return path.extname(new URL(url).pathname).slice(1)
+}
+
+// 辅助函数：尝试从缓存获取图片，缓存不可用时返回 null
+async function getCachedImageIfExists(
+  imageCache: ImageCache | null,
+  gid: string,
+  mediaId: string | undefined,
+  index: number,
+  url: string,
+  debugLog: boolean,
+): Promise<{ buffer: Buffer; extension: string } | null> {
+  if (!imageCache || !mediaId || !gid) return null
+
+  const isThumb = url.includes('/thumb.')
+  const cachedBuffer = await imageCache.get(gid, mediaId, index, isThumb)
+  if (cachedBuffer) {
+    const ext = getFileExtension(url)
+    debugLog && logger.info(`缓存命中: ${isThumb ? '缩略图' : `图片 ${index + 1}`} (gid: ${gid})`)
+    return { buffer: cachedBuffer, extension: ext }
+  }
+  return null
+}
+
+// 辅助函数：保存图片到缓存
+async function saveCacheIfPossible(
+  imageCache: ImageCache | null,
+  gid: string,
+  mediaId: string | undefined,
+  index: number,
+  buffer: Buffer,
+  extension: string,
+  url: string,
+  debugLog: boolean,
+): Promise<void> {
+  if (!imageCache || !mediaId || !gid) return
+
+  const isThumb = url.includes('/thumb.')
+  await imageCache.set(gid, mediaId, index, buffer, extension, isThumb).catch((err) => {
+    debugLog && logger.warn(`保存缓存失败: ${err.message}`)
+  })
+}
+
+// 辅助函数：对主机列表进行优先级排序，将成功的主机置于首位
+function prioritizeSuccessfulHost(
+  hostsToTry: string[],
+  successfulHosts: Map<string, string>,
+  gid: string,
+): void {
+  if (hostsToTry.length <= 1) return
+
+  const preferredHost = successfulHosts.get(gid)
+  if (preferredHost && hostsToTry.includes(preferredHost)) {
+    const idx = hostsToTry.indexOf(preferredHost)
+    if (idx > 0) {
+      hostsToTry.splice(idx, 1)
+      hostsToTry.unshift(preferredHost)
+    }
+  }
+}
+
+// 辅助函数：构建请求选项对象
+function buildRequestOptions(gid: string, config: Config, sessionToken?: object): any {
+  const options: any = {
+    headers: { Referer: `https://nhentai.net/g/${gid}/` },
+    timeout: { request: config.downloadTimeout * 1000 },
+    throwHttpErrors: true,
+  }
+  if (sessionToken) {
+    options.sessionToken = sessionToken
+  }
+  return options
+}
+
+// 根据输出模式转换图片格式
 export async function convertImageForMode(
   wasm: WasmImageProcessor,
   buffer: Buffer,
@@ -34,9 +108,7 @@ export async function convertImageForMode(
   return { buffer, finalFormat: format }
 }
 
-/**
- * 根据配置对 JPEG 图片进行条件压缩。
- */
+// 根据配置对 JPEG 图片进行条件压缩
 export async function conditionallyCompressJpeg(
   wasm: WasmImageProcessor,
   buffer: Buffer,
@@ -52,7 +124,7 @@ export async function conditionallyCompressJpeg(
 
   const sizeKB = buffer.length / 1024
   if (threshold > 0 && sizeKB <= threshold) {
-    if (debug) logger.debug(`JPEG ${(sizeKB).toFixed(1)}KB ≤ ${threshold}KB，跳过压缩`)
+    debug && logger.debug(`JPEG ${(sizeKB).toFixed(1)}KB ≤ ${threshold}KB，跳过压缩`)
     return buffer
   }
 
@@ -70,10 +142,7 @@ export async function conditionallyCompressJpeg(
   }
 }
 
-/**
- * 对单张图片应用反和谐处理。
- * @returns 包含处理后的 buffer 和新格式的对象
- */
+// 对单张图片应用反和谐处理，返回处理后的 buffer 和新格式
 export function applyAntiGzip(
   wasm: WasmImageProcessor,
   buffer: Buffer,
@@ -83,9 +152,10 @@ export function applyAntiGzip(
   if (!config.antiGzip.enabled) return { buffer, format: 'original' }
 
   const logPrefix = `[AntiGzip]${identifier ? ` (${identifier})` : ''}`
+  const debugLog = config.debug
   try {
-    const result = wasm.apply_anti_censorship_jpeg(new Uint8Array(buffer), 0.4)
-    if (config.debug) logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes (WebP)`)
+    const result = wasm.apply_anti_censorship_jpeg(new Uint8Array(buffer))
+    debugLog && logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes (WebP)`)
     return { buffer: Buffer.from(result), format: 'webp' }
   } catch (error) {
     logger.warn(`${logPrefix} 处理失败，返回原图: ${error.message}`)
@@ -93,10 +163,7 @@ export function applyAntiGzip(
   }
 }
 
-/**
- * 批量对图片应用反和谐处理。
- * @returns 包含处理后的 buffer 和格式信息的数组
- */
+// 批量对图片应用反和谐处理，返回处理后的 buffer 和格式信息数组
 export function batchApplyAntiGzip(
   wasm: WasmImageProcessor,
   images: Array<{ buffer: Buffer; identifier?: string }>,
@@ -109,9 +176,7 @@ export function batchApplyAntiGzip(
   return images.map((img) => applyAntiGzip(wasm, img.buffer, config, img.identifier))
 }
 
-/**
- * 下载单张图片，支持缓存、重试和智能域名切换。
- */
+// 下载单张图片，支持缓存、重试和智能域名切换
 export async function downloadImage(
   got: GotScraping,
   url: string,
@@ -124,33 +189,25 @@ export async function downloadImage(
   retries: number = config.downloadRetries,
   sessionToken?: object,
 ): Promise<DownloadedImage | { index: number; error: Error }> {
-  if (imageCache && mediaId && gid) {
-    const isThumb = url.includes('/thumb.')
-    const cachedBuffer = await imageCache.get(gid, mediaId, index, isThumb)
-    if (cachedBuffer) {
-      const originalExt = path.extname(new URL(url).pathname).slice(1)
-      if (config.debug) logger.info(`缓存命中: ${isThumb ? '缩略图' : `图片 ${index + 1}`} (gid: ${gid})`)
-      return { index, buffer: cachedBuffer, extension: originalExt, galleryId: gid, mediaId }
-    }
+  const debugLog = config.debug
+
+  // 尝试从缓存获取
+  const cached = await getCachedImageIfExists(imageCache, gid, mediaId, index, url, debugLog)
+  if (cached) {
+    return { index, buffer: cached.buffer, extension: cached.extension, galleryId: gid, mediaId }
   }
 
   const originalUrl = new URL(url)
-  const originalExt = path.extname(originalUrl.pathname).slice(1)
+  const originalExt = getFileExtension(url)
   const fallbackExts = ['jpg', 'png'].filter((ext) => ext !== originalExt)
   const baseHostname = originalUrl.hostname
 
   const fallbackHosts = baseHostname.startsWith('t') ? THUMB_HOST_FALLBACK : IMAGE_HOST_FALLBACK
   const hostsToTry = [baseHostname, ...fallbackHosts]
 
-  if (config.enableSmartRetry && hostsToTry.length > 1) {
-    const preferredHost = successfulHosts.get(gid)
-    if (preferredHost && hostsToTry.includes(preferredHost)) {
-      const idx = hostsToTry.indexOf(preferredHost)
-      if (idx > 0) {
-        hostsToTry.splice(idx, 1)
-        hostsToTry.unshift(preferredHost)
-      }
-    }
+  // 优先使用之前成功过的主机
+  if (config.enableSmartRetry) {
+    prioritizeSuccessfulHost(hostsToTry, successfulHosts, gid)
   }
 
   for (const host of hostsToTry) {
@@ -161,28 +218,22 @@ export async function downloadImage(
     for (const currentUrl of urlsWithHost) {
       const buffer = await attemptDownload(got, currentUrl, gid, retries, config, sessionToken)
       if (buffer) {
-        const finalExt = path.extname(new URL(currentUrl).pathname).slice(1)
+        const finalExt = getFileExtension(currentUrl)
         successfulHosts.set(gid, host)
 
-        if (imageCache && mediaId && gid) {
-          const isThumb = currentUrl.includes('/thumb.')
-          await imageCache.set(gid, mediaId, index, buffer, finalExt, isThumb).catch((err) => {
-            if (config.debug) logger.warn(`保存缓存失败: ${err.message}`)
-          })
-        }
+        // 保存到缓存
+        await saveCacheIfPossible(imageCache, gid, mediaId, index, buffer, finalExt, currentUrl, debugLog)
         return { index, buffer, extension: finalExt, galleryId: gid, mediaId }
       }
     }
-    if (config.debug) logger.info(`域名 ${host} 失败，切换到下一个`)
+    debugLog && logger.info(`域名 ${host} 失败，切换到下一个`)
   }
 
   logger.error(`图片 ${index + 1} (${url}) 在所有尝试后下载失败。`)
   return { index, error: new Error('所有主备域名和图片格式均下载失败') }
 }
 
-/**
- * 内部辅助函数，执行单次下载尝试，利用 got-scraping 的内置重试机制。
- */
+// 内部辅助：执行单次下载尝试，利用 got-scraping 的内置重试机制
 async function attemptDownload(
   got: GotScraping,
   url: string,
@@ -192,19 +243,11 @@ async function attemptDownload(
   sessionToken?: object,
 ): Promise<Buffer | null> {
   const maxRetries = Math.max(0, retries - 2)
+  const debugLog = config.debug
 
   for (let i = 0; i <= maxRetries; i++) {
     try {
-      const requestOptions: any = {
-        headers: { Referer: `https://nhentai.net/g/${gid}/` },
-        timeout: { request: config.downloadTimeout * 1000 },
-        throwHttpErrors: true,
-      }
-
-      if (sessionToken) {
-        requestOptions.sessionToken = sessionToken
-      }
-
+      const requestOptions = buildRequestOptions(gid, config, sessionToken)
       const response = await got.get(url, requestOptions)
 
       const contentType = response.headers['content-type']
@@ -213,7 +256,7 @@ async function attemptDownload(
       }
       return response.rawBody
     } catch (error) {
-      if (config.debug) logger.warn(`URL ${url} 下载失败 [${error.name || 'Error'}]: ${error.message}`)
+      debugLog && logger.warn(`URL ${url} 下载失败 [${error.name || 'Error'}]: ${error.message}`)
 
       if (i < maxRetries) {
         const isTimeout = error.name === 'TimeoutError'
@@ -221,7 +264,7 @@ async function attemptDownload(
         if (config.enableSmartRetry) {
           delay = isTimeout ? Math.min(delay * Math.pow(2, i), 10) : Math.min(delay * 0.5 * Math.pow(1.5, i), 5)
         }
-        if (config.debug) logger.info(`等待 ${delay.toFixed(1)}s 后重试... (${i + 1}/${maxRetries})`)
+        debugLog && logger.info(`等待 ${delay.toFixed(1)}s 后重试... (${i + 1}/${maxRetries})`)
         await sleep(delay * 1000)
       }
     }

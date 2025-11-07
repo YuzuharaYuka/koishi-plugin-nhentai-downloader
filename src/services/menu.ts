@@ -5,27 +5,23 @@ import { NhentaiService } from './nhentai'
 import { MenuGenerator } from './menu-generator'
 import { logger } from '../utils'
 
-/**
- * 菜单交互服务，用于管理图片菜单的生成和用户交互
- */
+// 菜单交互服务，用于管理图片菜单的生成和用户交互
 export class MenuService {
   private menuGenerator: MenuGenerator
   private activeMenus: Map<string, { galleries: Partial<Gallery>[], timestamp: number }> = new Map()
   private readonly MENU_EXPIRE_TIME = 5 * 60 * 1000 // 5分钟过期
+  private cleanupTimer: NodeJS.Timeout | null = null
 
   constructor(private config: Config, private nhentaiService: NhentaiService) {
     this.menuGenerator = new MenuGenerator(config, {
       columns: config.imageMenuColumns,
       maxRows: config.imageMenuMaxRows,
     })
-
     // 定期清理过期的菜单
-    setInterval(() => this.cleanupExpiredMenus(), 60000)
+    this.cleanupTimer = setInterval(() => this.cleanupExpiredMenus(), 60000)
   }
 
-  /**
-   * 生成并发送搜索结果图片菜单
-   */
+  // 生成并发送搜索结果图片菜单
   async sendSearchMenu(
     session: Session,
     galleries: Partial<Gallery>[],
@@ -38,17 +34,7 @@ export class MenuService {
 
       // 获取缩略图
       const covers = await this.nhentaiService.getCoversForGalleries(displayGalleries)
-      const thumbnails: Buffer[] = []
-
-      for (const gallery of displayGalleries) {
-        const cover = covers.get(gallery.id as string)
-        if (cover) {
-          thumbnails.push(cover.buffer)
-        } else {
-          // 如果缩略图获取失败，使用空 Buffer
-          thumbnails.push(Buffer.alloc(0))
-        }
-      }
+      const thumbnails = displayGalleries.map(gallery => covers.get(gallery.id as string)?.buffer ?? Buffer.alloc(0))
 
       // 生成菜单图片
       const menuImage = await this.menuGenerator.generateMenu(displayGalleries, thumbnails, totalResults, startIndex)
@@ -63,9 +49,7 @@ export class MenuService {
         timestamp: Date.now(),
       })
 
-      if (this.config.debug) {
-        logger.info(`生成了包含 ${displayGalleries.length} 个画廊的菜单`)
-      }
+      logger.info(`生成了包含 ${displayGalleries.length} 个画廊的菜单`)
 
       return displayGalleries
 
@@ -75,9 +59,7 @@ export class MenuService {
     }
   }
 
-  /**
-   * 处理用户的菜单选择
-   */
+  // 处理用户的菜单选择
   async handleMenuSelection(session: Session, selection: string): Promise<Partial<Gallery> | null> {
     const menuKey = this.getMenuKey(session)
     const menu = this.activeMenus.get(menuKey)
@@ -86,18 +68,14 @@ export class MenuService {
       return null
     }
 
-    // 检查菜单是否过期
-    if (Date.now() - menu.timestamp > this.MENU_EXPIRE_TIME) {
-      this.activeMenus.delete(menuKey)
+    if (this.isMenuExpired(menuKey, menu)) {
       return null
     }
 
-    // 解析选择
     const index = parseInt(selection, 10)
 
     if (index === 0) {
-      // 用户取消选择
-      this.activeMenus.delete(menuKey)
+      this.activeMenus.delete(menuKey) // 用户取消选择
       return null
     }
 
@@ -105,53 +83,40 @@ export class MenuService {
       return null
     }
 
-    // 返回选中的画廊
     const selectedGallery = menu.galleries[index - 1]
-
-    // 清除菜单状态
-    this.activeMenus.delete(menuKey)
-
+    this.activeMenus.delete(menuKey) // 清除菜单状态
     return selectedGallery
   }
 
-  /**
-   * 检查会话是否有活跃的菜单
-   */
+  // 检查会话是否有活跃的菜单
   hasActiveMenu(session: Session): boolean {
     const menuKey = this.getMenuKey(session)
     const menu = this.activeMenus.get(menuKey)
-
-    if (!menu) {
-      return false
-    }
-
-    // 检查是否过期
-    if (Date.now() - menu.timestamp > this.MENU_EXPIRE_TIME) {
-      this.activeMenus.delete(menuKey)
-      return false
-    }
-
-    return true
+    return menu ? !this.isMenuExpired(menuKey, menu) : false
   }
 
-  /**
-   * 清除会话的菜单状态
-   */
+  // 清除会话的菜单状态
   clearMenu(session: Session): void {
     const menuKey = this.getMenuKey(session)
     this.activeMenus.delete(menuKey)
   }
 
-  /**
-   * 获取菜单键
-   */
+  // 获取菜单键（平台:群组ID:用户ID）
   private getMenuKey(session: Session): string {
-    return `${session.platform}:${session.guildId || session.userId}:${session.userId}`
+    const channelId = session.guildId ?? session.userId
+    return `${session.platform}:${channelId}:${session.userId}`
   }
 
-  /**
-   * 清理过期的菜单
-   */
+  // 检查菜单是否过期
+  private isMenuExpired(menuKey: string, menu: { galleries: Partial<Gallery>[], timestamp: number }): boolean {
+    if (Date.now() - menu.timestamp > this.MENU_EXPIRE_TIME) {
+      this.activeMenus.delete(menuKey)
+      return true
+    }
+    return false
+  }
+
+  // 清理过期的菜单
   private cleanupExpiredMenus(): void {
     const now = Date.now()
     let cleanedCount = 0
@@ -168,10 +133,12 @@ export class MenuService {
     }
   }
 
-  /**
-   * 释放资源
-   */
+  // 释放资源
   dispose(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer) // 清除定时器，防止内存泄漏
+      this.cleanupTimer = null
+    }
     this.activeMenus.clear()
     this.menuGenerator.dispose()
     if (this.config.debug) {

@@ -2,33 +2,12 @@ import { createCanvas, loadImage, SKRSContext2D, GlobalFonts } from '@napi-rs/ca
 import { Gallery } from '../types'
 import { Config } from '../config'
 import { logger } from '../utils'
-import { existsSync } from 'fs'
-import { join } from 'path'
 
-/**
- * 菜单生成器配置
- */
+// 菜单生成器配置接口
 export interface MenuGeneratorOptions {
-  /** 每行显示的画廊数量 */
-  columns: number
-  /** 最大行数 */
-  maxRows: number
-  /** 缩略图宽度 */
-  thumbWidth: number
-  /** 缩略图高度 */
-  thumbHeight: number
-  /** 画布宽度 */
-  canvasWidth: number
-  /** 标题字体大小 */
-  titleFontSize: number
-  /** 信息字体大小 */
-  infoFontSize: number
-  /** 序号字体大小 */
-  indexFontSize: number
-  /** 边距 */
-  padding: number
-  /** 缩略图间距 */
-  gap: number
+  columns: number, maxRows: number, thumbWidth: number, thumbHeight: number,
+  canvasWidth: number, titleFontSize: number, infoFontSize: number, indexFontSize: number,
+  padding: number, gap: number
 }
 
 const defaultOptions: MenuGeneratorOptions = {
@@ -44,9 +23,47 @@ const defaultOptions: MenuGeneratorOptions = {
   gap: 16,
 }
 
-/**
- * 图片菜单生成服务
- */
+// CJK 字体检测关键词
+const CJK_FONT_KEYWORDS = [
+  'cjk', 'noto', 'wenquanyi', 'wqy', 'droid',
+  'han', 'chinese', 'japanese', 'korean',
+  'pingfang', 'hiragino', 'microsoft yahei', 'simhei',
+  'arial unicode', 'dejavu', 'liberation',
+] as const
+
+// 卡片样式配置
+const CARD_STYLES = {
+  cardBg: '#1e1e1e',
+  cardBorder: '#2a2a2a',
+  infoBg: '#0a0a0a',
+  placeholderBg: '#151515',
+  canvasBg: '#000000',
+  titleColor: '#f5f5f5',
+  infoColor: '#c0c0c0',
+  placeholderColor: '#555555',
+  badgeSize: 44,
+  badgeBg: 'rgba(0, 0, 0, 0.75)',
+  badgeBorder: 'rgba(255, 255, 255, 0.2)',
+  badgeText: '#ffffff',
+  langBg: '#1a3a1a',
+  langText: '#7ed87e',
+  cardRadius: 6,
+  infoAreaHeight: 90,
+  lineHeight: 2,
+} as const
+
+// 语言名称映射
+const LANG_MAP: Record<string, string> = {
+  'chinese': 'Chinese',
+  'english': 'English',
+  'japanese': 'Japanese',
+  'translated': 'Translated',
+} as const
+
+// 字体常量
+const CJK_FONT_FAMILY = '"Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif'
+
+// 图片菜单生成服务
 export class MenuGenerator {
   private options: MenuGeneratorOptions
   private fontLoaded: boolean = false
@@ -56,73 +73,39 @@ export class MenuGenerator {
     this.loadFonts()
   }
 
-  /**
-   * 加载中文字体
-   */
+  // 加载中文字体
   private loadFonts(): void {
     if (this.fontLoaded) return
 
     try {
-      // Windows 系统字体路径
-      const windowsFonts = [
-        'C:\\Windows\\Fonts\\msyh.ttc',      // 微软雅黑
-        'C:\\Windows\\Fonts\\simhei.ttf',    // 黑体
-        'C:\\Windows\\Fonts\\simsun.ttc',    // 宋体
-        'C:\\Windows\\Fonts\\simkai.ttf',    // 楷体
-        'C:\\Windows\\Fonts\\msyhbd.ttc',    // 微软雅黑 Bold
-      ]
+      // @napi-rs/canvas 会自动加载系统字体，无需手动注册
+      const systemFonts = GlobalFonts.families
+      const cjkFonts = systemFonts.filter(font =>
+        CJK_FONT_KEYWORDS.some(keyword =>
+          font.family.toLowerCase().includes(keyword)
+        )
+      )
 
-      // Linux 系统字体路径
-      const linuxFonts = [
-        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
-        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
-        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-        '/usr/share/fonts/truetype/arphic/uming.ttc',
-      ]
-
-      // macOS 系统字体路径
-      const macFonts = [
-        '/System/Library/Fonts/PingFang.ttc',
-        '/System/Library/Fonts/Hiragino Sans GB.ttc',
-        '/Library/Fonts/Arial Unicode.ttf',
-      ]
-
-      const allFonts = [...windowsFonts, ...linuxFonts, ...macFonts]
-      let loadedCount = 0
-
-      for (const fontPath of allFonts) {
-        if (existsSync(fontPath)) {
-          try {
-            GlobalFonts.registerFromPath(fontPath, 'CJK')
-            loadedCount++
-            if (this.config.debug) {
-              logger.info(`成功加载字体: ${fontPath}`)
-            }
-            break // 只需要加载一个成功的字体即可
-          } catch (err) {
-            if (this.config.debug) {
-              logger.warn(`加载字体失败 ${fontPath}: ${err.message}`)
-            }
-          }
-        }
-      }
-
-      if (loadedCount > 0) {
+      if (cjkFonts.length > 0) {
         this.fontLoaded = true
         if (this.config.debug) {
-          logger.info(`成功加载 ${loadedCount} 个 CJK 字体`)
+          logger.info(`检测到 ${cjkFonts.length} 个 CJK 字体`)
         }
       } else {
-        logger.warn('未找到可用的 CJK 字体，文字可能无法正常显示')
+        this.fontLoaded = true // Canvas 会 fallback 到默认字体
+        if (this.config.debug) {
+          logger.warn('未检测到专用 CJK 字体，将使用系统默认字体渲染中文')
+        }
       }
     } catch (error) {
-      logger.error(`字体加载失败: ${error.message}`)
+      this.fontLoaded = true // 避免重复尝试
+      if (this.config.debug) {
+        logger.error(`字体检测失败: ${error.message}，将使用系统默认字体`)
+      }
     }
   }
 
-  /**
-   * 截断文本以适应宽度
-   */
+  // 截断文本以适应宽度
   private truncateText(ctx: SKRSContext2D, text: string, maxWidth: number): string {
     const ellipsis = '...'
     let truncated = text
@@ -134,9 +117,66 @@ export class MenuGenerator {
     return truncated === text ? text : truncated + ellipsis
   }
 
-  /**
-   * 绘制圆角矩形
-   */
+  // 分行截断长标题
+  private splitLongTitle(ctx: SKRSContext2D, title: string, maxLineWidth: number): { firstLine: string; secondLine: string } {
+    let firstLine = title, secondLine = ''
+    if (ctx.measureText(title).width <= maxLineWidth) return { firstLine, secondLine }
+
+    let splitIndex = title.length
+    while (splitIndex > 0 && ctx.measureText(title.substring(0, splitIndex)).width > maxLineWidth) {
+      splitIndex--
+    }
+
+    if (splitIndex > 0) {
+      firstLine = title.substring(0, splitIndex)
+      secondLine = title.substring(splitIndex)
+      if (ctx.measureText(secondLine).width > maxLineWidth) {
+        secondLine = this.truncateText(ctx, secondLine, maxLineWidth)
+      }
+    } else {
+      firstLine = this.truncateText(ctx, title, maxLineWidth)
+    }
+    return { firstLine, secondLine }
+  }
+
+  // 获取语言标签文本
+  private getLanguageTagText(languages: string[]): string {
+    if (languages.length === 0) return ''
+    let langTag = LANG_MAP[languages[0]] || languages[0].toUpperCase()
+    if (languages.includes('translated') && languages.length > 1) {
+      const mainLang = languages.find(l => l !== 'translated')
+      if (mainLang) {
+        langTag = `Translated: ${LANG_MAP[mainLang] || mainLang}`
+      }
+    }
+    return langTag
+  }
+
+  // 绘制语言标签
+  private drawLanguageTag(
+    ctx: SKRSContext2D,
+    languages: string[],
+    x: number,
+    y: number,
+    width: number
+  ): void {
+    const langTag = this.getLanguageTagText(languages)
+    if (!langTag) return
+
+    ctx.font = `${this.options.infoFontSize - 3}px Arial, sans-serif`
+    const langWidth = ctx.measureText(langTag).width + 10
+    const langX = x + (width - langWidth) / 2
+
+    ctx.fillStyle = CARD_STYLES.langBg
+    this.drawRoundedRect(ctx, langX, y, langWidth, 16, 3)
+    ctx.fill()
+
+    ctx.textAlign = 'left'
+    ctx.fillStyle = CARD_STYLES.langText
+    ctx.fillText(langTag, langX + 5, y + 3)
+  }
+
+  // 绘制圆角矩形
   private drawRoundedRect(ctx: SKRSContext2D, x: number, y: number, width: number, height: number, radius: number): void {
     ctx.beginPath()
     ctx.moveTo(x + radius, y)
@@ -151,9 +191,7 @@ export class MenuGenerator {
     ctx.closePath()
   }
 
-  /**
-   * 绘制单个画廊卡片 - 简洁优雅版
-   */
+  // 绘制单个画廊卡片
   private async drawGalleryCard(
     ctx: SKRSContext2D,
     gallery: Partial<Gallery>,
@@ -163,22 +201,18 @@ export class MenuGenerator {
     y: number
   ): Promise<void> {
     const { thumbWidth, thumbHeight, infoFontSize, indexFontSize } = this.options
-    const infoAreaHeight = 90 // 增加高度以容纳两行标题
-    const cardHeight = thumbHeight + infoAreaHeight
+    const cardHeight = thumbHeight + CARD_STYLES.infoAreaHeight
 
-    // 绘制卡片背景
-    ctx.fillStyle = '#1e1e1e'
-    this.drawRoundedRect(ctx, x, y, thumbWidth, cardHeight, 6)
+    ctx.fillStyle = CARD_STYLES.cardBg // 卡片背景
+    this.drawRoundedRect(ctx, x, y, thumbWidth, cardHeight, CARD_STYLES.cardRadius)
     ctx.fill()
 
-    // 绘制细边框
-    ctx.strokeStyle = '#2a2a2a'
+    ctx.strokeStyle = CARD_STYLES.cardBorder // 细边框
     ctx.lineWidth = 1
-    this.drawRoundedRect(ctx, x, y, thumbWidth, cardHeight, 6)
+    this.drawRoundedRect(ctx, x, y, thumbWidth, cardHeight, CARD_STYLES.cardRadius)
     ctx.stroke()
 
     try {
-      // 加载并绘制缩略图
       const img = await loadImage(thumbnail)
 
       // 计算缩略图实际尺寸（保持宽高比）
@@ -197,164 +231,79 @@ export class MenuGenerator {
         drawX = x + (thumbWidth - drawWidth) / 2
       }
 
-      // 裁剪区域为圆角矩形
       ctx.save()
       this.drawRoundedRect(ctx, x, y, thumbWidth, thumbHeight, 6)
-      ctx.clip()
-
-      // 绘制缩略图
+      ctx.clip() // 裁剪为圆角
       ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight)
       ctx.restore()
 
-      // 绘制序号标签 - 简洁半透明设计
-      const badgeSize = 44
-      const badgeX = x + 8
-      const badgeY = y + 8
-
-      // 序号背景
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.75)'
-      this.drawRoundedRect(ctx, badgeX, badgeY, badgeSize, badgeSize, 6)
+      // 绘制序号标签
+      const badgeX = x + 8, badgeY = y + 8
+      ctx.fillStyle = CARD_STYLES.badgeBg
+      this.drawRoundedRect(ctx, badgeX, badgeY, CARD_STYLES.badgeSize, CARD_STYLES.badgeSize, 6)
       ctx.fill()
 
-      // 序号边框
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)'
+      ctx.strokeStyle = CARD_STYLES.badgeBorder
       ctx.lineWidth = 1.5
-      this.drawRoundedRect(ctx, badgeX, badgeY, badgeSize, badgeSize, 6)
+      this.drawRoundedRect(ctx, badgeX, badgeY, CARD_STYLES.badgeSize, CARD_STYLES.badgeSize, 6)
       ctx.stroke()
 
-      // 绘制序号
-      ctx.fillStyle = '#ffffff'
+      ctx.fillStyle = CARD_STYLES.badgeText
       ctx.font = `bold ${indexFontSize}px Arial, sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText(`${index}`, badgeX + badgeSize / 2, badgeY + badgeSize / 2)
+      ctx.fillText(`${index}`, badgeX + CARD_STYLES.badgeSize / 2, badgeY + CARD_STYLES.badgeSize / 2)
 
     } catch (error) {
-      // 如果缩略图加载失败，显示占位符
-      ctx.fillStyle = '#151515'
-      this.drawRoundedRect(ctx, x, y, thumbWidth, thumbHeight, 6)
+      // 缩略图加载失败显示占位符
+      ctx.fillStyle = CARD_STYLES.placeholderBg
+      this.drawRoundedRect(ctx, x, y, thumbWidth, thumbHeight, CARD_STYLES.cardRadius)
       ctx.fill()
 
-      ctx.fillStyle = '#555555'
+      ctx.fillStyle = CARD_STYLES.placeholderColor
       ctx.font = `${infoFontSize}px Arial, sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillText('加载失败', x + thumbWidth / 2, y + thumbHeight / 2)
     }
 
-    // 信息区域
     const infoY = y + thumbHeight
-    const infoHeight = infoAreaHeight
+    ctx.fillStyle = CARD_STYLES.infoBg
+    ctx.fillRect(x, infoY, thumbWidth, CARD_STYLES.infoAreaHeight)
 
-    // 绘制信息区域背景 - 使用更深的背景色增加对比度
-    ctx.fillStyle = '#0a0a0a'
-    ctx.fillRect(x, infoY, thumbWidth, infoHeight)
-
-    // 绘制标题 - 支持两行显示，使用更亮的颜色
-    ctx.fillStyle = '#f5f5f5'
-    ctx.font = `${infoFontSize}px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif`
+    // 绘制标题（支持两行显示）
+    ctx.fillStyle = CARD_STYLES.titleColor
+    ctx.font = `${infoFontSize}px ${CJK_FONT_FAMILY}`
     ctx.textAlign = 'left'
     ctx.textBaseline = 'top'
 
     const title = gallery.title?.pretty || gallery.title?.english || `ID ${gallery.id}`
-    const maxLineWidth = thumbWidth - 16
-
-    // 将标题分成两行
-    let firstLine = title
-    let secondLine = ''
-
-    if (ctx.measureText(title).width > maxLineWidth) {
-      // 标题过长，需要分两行
-      let splitIndex = title.length
-      while (splitIndex > 0 && ctx.measureText(title.substring(0, splitIndex)).width > maxLineWidth) {
-        splitIndex--
-      }
-
-      if (splitIndex > 0) {
-        firstLine = title.substring(0, splitIndex)
-        secondLine = title.substring(splitIndex)
-
-        // 如果第二行还是太长，截断并加省略号
-        if (ctx.measureText(secondLine).width > maxLineWidth) {
-          secondLine = this.truncateText(ctx, secondLine, maxLineWidth)
-        }
-      } else {
-        // 单个字符就超宽，直接截断
-        firstLine = this.truncateText(ctx, title, maxLineWidth)
-      }
-    }
-
+    const { firstLine, secondLine } = this.splitLongTitle(ctx, title, thumbWidth - 16)
     ctx.fillText(firstLine, x + 8, infoY + 6)
     if (secondLine) {
       ctx.fillText(secondLine, x + 8, infoY + 6 + infoFontSize + 2)
     }
-
-    // 绘制信息行 - ID居左、页数居中、收藏居右
-    // 始终使用两行标题的位置，保持所有卡片信息行对齐
+    // 绘制信息行 - ID居左、页数居中、收藏居右（两行标题位置固定）
     const infoLineY = infoY + 46
-    ctx.font = `${infoFontSize - 2}px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif`
-    ctx.fillStyle = '#c0c0c0'  // 提高亮度，从 #999 改为 #c0c0c0
+    ctx.font = `${infoFontSize - 2}px ${CJK_FONT_FAMILY}`
+    ctx.fillStyle = CARD_STYLES.infoColor
 
-    const id = gallery.id
-    const pages = gallery.num_pages || '?'
-    const fav = gallery.num_favorites || 0
-
-    // 左侧：ID
+    const id = gallery.id, pages = gallery.num_pages || '?', fav = gallery.num_favorites || 0
     ctx.textAlign = 'left'
-    ctx.fillText(`ID: ${id}`, x + 8, infoLineY)
-
-    // 中间：页数
+    ctx.fillText(`ID: ${id}`, x + 8, infoLineY) // 左侧
     ctx.textAlign = 'center'
-    ctx.fillText(`页数: ${pages}`, x + thumbWidth / 2, infoLineY)
-
-    // 右侧：收藏
+    ctx.fillText(`页数: ${pages}`, x + thumbWidth / 2, infoLineY) // 中间
     ctx.textAlign = 'right'
-    ctx.fillText(`收藏: ${fav}`, x + thumbWidth - 8, infoLineY)
+    ctx.fillText(`收藏: ${fav}`, x + thumbWidth - 8, infoLineY) // 右侧
 
-    // 语言标签 - 显示详细语言信息，居中显示
+    // 语言标签（居中显示）
     const languages = gallery.tags?.filter(tag => tag.type === 'language').map(tag => tag.name) || []
     if (languages.length > 0) {
-      const langY = infoLineY + 20
-
-      // 语言名称映射
-      const langMap: Record<string, string> = {
-        'chinese': 'Chinese',
-        'english': 'English',
-        'japanese': 'Japanese',
-        'translated': 'Translated'
-      }
-
-      let langTag = langMap[languages[0]] || languages[0].toUpperCase()
-
-      // 如果包含 translated 标签，显示更详细的信息
-      if (languages.includes('translated') && languages.length > 1) {
-        const mainLang = languages.find(l => l !== 'translated')
-        if (mainLang) {
-          langTag = `Translated: ${langMap[mainLang] || mainLang}`
-        }
-      }
-
-      ctx.font = `${infoFontSize - 3}px Arial, sans-serif`
-      const langWidth = ctx.measureText(langTag).width + 10
-
-      // 计算居中位置
-      const langX = x + (thumbWidth - langWidth) / 2
-
-      // 绘制语言标签背景 - 使用更明显的背景色
-      ctx.fillStyle = '#1a3a1a'
-      this.drawRoundedRect(ctx, langX, langY, langWidth, 16, 3)
-      ctx.fill()
-
-      // 绘制语言标签文字 - 使用更亮的绿色，居中对齐
-      ctx.textAlign = 'left'
-      ctx.fillStyle = '#7ed87e'
-      ctx.fillText(langTag, langX + 5, langY + 3)
+      this.drawLanguageTag(ctx, languages, x, infoLineY + 20, thumbWidth)
     }
   }
 
-  /**
-   * 生成搜索结果菜单图片 - 简洁优雅版
-   */
+  // 生成搜索结果菜单图片
   async generateMenu(
     galleries: Partial<Gallery>[],
     thumbnails: Buffer[],
@@ -386,70 +335,55 @@ export class MenuGenerator {
     ctx.fillStyle = '#000000'
     ctx.fillRect(0, 0, canvasWidth, canvasHeight)
 
-    // 绘制顶部标题区域
+    // 绘制顶部标题
     const titleY = padding + 5
-
     ctx.fillStyle = '#ffffff'
-    ctx.font = `bold ${titleFontSize}px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif`
+    ctx.font = `bold ${titleFontSize}px ${CJK_FONT_FAMILY}`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'top'
     ctx.fillText('搜索结果', canvasWidth / 2, titleY)
 
-    // 绘制统计信息 - 提高亮度
+    // 绘制统计信息
     const statY = titleY + titleFontSize + 10
-    ctx.font = `${infoFontSize}px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif`
-    ctx.fillStyle = '#b0b0b0'  // 提高亮度，从 #888 改为 #b0b0b0
-
+    ctx.font = `${infoFontSize}px ${CJK_FONT_FAMILY}`
+    ctx.fillStyle = '#b0b0b0'
     if (totalResults !== undefined && totalResults !== null) {
-      const start = (startIndex ?? 0) + 1
-      const end = (startIndex ?? 0) + displayCount
-      const statsText = `共找到约 ${totalResults} 个结果，当前显示第 ${start}-${end} 项`
-      ctx.fillText(statsText, canvasWidth / 2, statY)
+      const start = (startIndex ?? 0) + 1, end = (startIndex ?? 0) + displayCount
+      ctx.fillText(`共找到约 ${totalResults} 个结果，当前显示第 ${start}-${end} 项`, canvasWidth / 2, statY)
     } else {
       ctx.fillText(`当前显示 ${displayCount} 个结果`, canvasWidth / 2, statY)
     }
 
-    // 计算卡片起始位置（宽度已在上面计算）
-    const startX = (canvasWidth - totalCardsWidth) / 2
-    const startY = headerHeight + padding
+    // 计算卡片起始位置
+    const startX = (canvasWidth - totalCardsWidth) / 2, startY = headerHeight + padding
 
     // 绘制所有画廊卡片
     for (let i = 0; i < displayCount; i++) {
-      const row = Math.floor(i / columns)
-      const col = i % columns
-      const x = startX + col * (thumbWidth + gap)
-      const y = startY + row * (cardHeight + gap)
-
+      const row = Math.floor(i / columns), col = i % columns
+      const x = startX + col * (thumbWidth + gap), y = startY + row * (cardHeight + gap)
       await this.drawGalleryCard(ctx, galleries[i], thumbnails[i], i + 1, x, y)
     }
 
-    // 绘制底部提示 - 居中对齐
+    // 绘制底部提示
     const footerY = canvasHeight - footerHeight + 15
-
     ctx.textAlign = 'center'
     ctx.textBaseline = 'top'
 
-    ctx.font = `${infoFontSize + 1}px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif`
-    ctx.fillStyle = '#f5f5f5'  // 保持明亮
+    ctx.font = `${infoFontSize + 1}px ${CJK_FONT_FAMILY}`
+    ctx.fillStyle = '#f5f5f5'
     ctx.fillText('回复序号下载对应漫画', canvasWidth / 2, footerY)
 
-    ctx.font = `${infoFontSize - 1}px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif`
-    ctx.fillStyle = '#b0b0b0'  // 提高亮度，从 #888 改为 #b0b0b0
+    ctx.font = `${infoFontSize - 1}px ${CJK_FONT_FAMILY}`
+    ctx.fillStyle = '#b0b0b0'
     ctx.fillText('支持翻页 [F/B] 和退出 [N] 操作', canvasWidth / 2, footerY + 24)
 
     // 输出为 PNG Buffer
     return canvas.toBuffer('image/png')
   }
 
-  /**
-   * 生成单个画廊的详细信息卡片
-   */
+  // 生成单个画廊的详细信息卡片
   async generateGalleryCard(gallery: Gallery, coverImage: Buffer): Promise<Buffer> {
-    const cardWidth = 600
-    const cardHeight = 800
-    const coverWidth = 400
-    const coverHeight = 550
-
+    const cardWidth = 600, cardHeight = 800, coverWidth = 400, coverHeight = 550
     const canvas = createCanvas(cardWidth, cardHeight)
     const ctx = canvas.getContext('2d')
 
@@ -463,7 +397,7 @@ export class MenuGenerator {
 
     // 绘制标题
     ctx.fillStyle = '#ffffff'
-    ctx.font = 'bold 24px CJK, sans-serif'
+    ctx.font = `bold 24px ${CJK_FONT_FAMILY}`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     const title = gallery.title?.pretty || gallery.title?.english || `作品 ${gallery.id}`
@@ -473,12 +407,10 @@ export class MenuGenerator {
     try {
       // 绘制封面
       const img = await loadImage(coverImage)
-      const x = (cardWidth - coverWidth) / 2
-      const y = 100
-
+      const x = (cardWidth - coverWidth) / 2, y = 100
       ctx.save()
       this.drawRoundedRect(ctx, x, y, coverWidth, coverHeight, 12)
-      ctx.clip()
+      ctx.clip() // 圆角裁剪
       ctx.drawImage(img, x, y, coverWidth, coverHeight)
       ctx.restore()
     } catch (error) {
@@ -488,7 +420,7 @@ export class MenuGenerator {
     // 绘制信息
     const infoY = 670
     ctx.fillStyle = '#cccccc'
-    ctx.font = '18px CJK, sans-serif'
+    ctx.font = `18px ${CJK_FONT_FAMILY}`
     ctx.textAlign = 'center'
 
     const info = [
@@ -502,9 +434,7 @@ export class MenuGenerator {
     return canvas.toBuffer('image/png')
   }
 
-  /**
-   * 释放资源
-   */
+  // 释放资源
   dispose(): void {
     if (this.config.debug) {
       logger.info('菜单生成器已清理')

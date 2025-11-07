@@ -1,6 +1,4 @@
-/**
- * PDF 生成模块，负责创建和加密 PDF 文件。
- */
+// PDF 生成模块，负责创建和加密 PDF 文件。
 import PDFDocument from 'pdfkit'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -9,6 +7,82 @@ import { DownloadedImage } from './types'
 import { Config } from '../config'
 import { logger } from '../utils'
 import { convertImageForMode, conditionallyCompressJpeg } from './images'
+
+// 扩展的图片类型，包含处理相关的额外字段
+interface ProcessingImage extends DownloadedImage {
+  processedBuffer?: Buffer
+  finalFormat?: string
+  galleryId?: string
+  mediaId?: string
+}
+
+// 处理图片并返回最终缓冲区和格式
+async function processImageBuffer(
+  image: ProcessingImage,
+  processor: any,
+  imageCache: any,
+  config: Config,
+  debugLog: boolean,
+): Promise<{ buffer: Buffer; format: string }> {
+  // 使用预处理缓存
+  if (image.processedBuffer) {
+    debugLog && logger.debug(`使用预处理缓存: 图片 ${image.index + 1}`)
+    return { buffer: image.processedBuffer, format: image.finalFormat || image.extension }
+  }
+
+  // 查询处理缓存
+  if (imageCache) {
+    const cached = await imageCache.getProcessed(image.galleryId, image.mediaId, image.index)
+    if (cached) {
+      debugLog && logger.info(`处理缓存命中: 图片 ${image.index + 1} (gid: ${image.galleryId})`)
+      return { buffer: cached.buffer, format: cached.extension }
+    }
+
+    // 缓存未命中，进行处理并保存
+    const { buffer: convertedBuffer, finalFormat: fmt } = await convertImageForMode(
+      processor.wasm,
+      image.buffer,
+      image.extension,
+      'pdf',
+      config,
+    )
+    const compressed = await conditionallyCompressJpeg(
+      processor.wasm,
+      convertedBuffer,
+      fmt,
+      config.pdfJpegRecompressionSize,
+      config.pdfCompressionQuality,
+      config.pdfEnableCompression,
+      debugLog,
+    )
+
+    await imageCache.setProcessed(image.galleryId, image.mediaId, image.index, compressed, fmt).catch(
+      (err) => {
+        debugLog && logger.warn(`保存处理缓存失败: ${err.message}`)
+      },
+    )
+    return { buffer: compressed, format: fmt }
+  }
+
+  // 无缓存，直接处理
+  const { buffer: convertedBuffer, finalFormat: fmt } = await convertImageForMode(
+    processor.wasm,
+    image.buffer,
+    image.extension,
+    'pdf',
+    config,
+  )
+  const compressed = await conditionallyCompressJpeg(
+    processor.wasm,
+    convertedBuffer,
+    fmt,
+    config.pdfJpegRecompressionSize,
+    config.pdfCompressionQuality,
+    config.pdfEnableCompression,
+    debugLog,
+  )
+  return { buffer: compressed, format: fmt }
+}
 
 export async function createPdf(
   imageStream: AsyncIterable<DownloadedImage>,
@@ -21,6 +95,8 @@ export async function createPdf(
 ): Promise<string> {
   const downloadDir = path.resolve(baseDir, config.downloadPath)
   const tempPdfPath = path.resolve(downloadDir, `temp_${galleryId}_${Date.now()}.pdf`)
+  const debugLog = config.debug // 缓存 debug 标志，避免多次访问
+  const abortController = new AbortController()
 
   try {
     const docOptions: any = { bufferPages: false } // 流式写入以优化内存
@@ -32,7 +108,6 @@ export async function createPdf(
     const doc = new PDFDocument(docOptions)
     const writeStream = fs.createWriteStream(tempPdfPath)
     let pageCount = 0
-    let shouldContinue = true
 
     onProgress('正在生成 PDF...')
 
@@ -41,84 +116,26 @@ export async function createPdf(
     const processingPromise = (async () => {
       try {
         for await (const image of imageStream) {
-          if (!shouldContinue) break
+          if (abortController.signal.aborted) break
 
           try {
             pageCount++
             if (pageCount % 10 === 0) onProgress(`PDF生成进度: ${pageCount} 页`)
 
-            let finalBuffer: Buffer
-            let finalFormat: string
+            const { buffer: finalBuffer, format: finalFormat } = await processImageBuffer(
+              image as ProcessingImage,
+              processor,
+              imageCache,
+              config,
+              debugLog,
+            )
 
-            if ((image as any).processedBuffer) {
-              finalBuffer = (image as any).processedBuffer
-              finalFormat = (image as any).finalFormat || image.extension
-              if (config.debug) logger.debug(`使用预处理缓存: 图片 ${image.index + 1}`)
-            } else if (imageCache) {
-              const cached = await imageCache.getProcessed(
-                (image as any).galleryId,
-                (image as any).mediaId,
-                image.index,
-              )
-              if (cached) {
-                finalBuffer = cached.buffer
-                finalFormat = cached.extension
-                if (config.debug) logger.info(`处理缓存命中: 图片 ${image.index + 1} (gid: ${(image as any).galleryId})`)
-              } else {
-                const { buffer: convertedBuffer, finalFormat: fmt } = await convertImageForMode(
-                  processor.wasm,
-                  image.buffer,
-                  image.extension,
-                  'pdf',
-                  config,
-                )
-                finalBuffer = await conditionallyCompressJpeg(
-                  processor.wasm,
-                  convertedBuffer,
-                  fmt,
-                  config.pdfJpegRecompressionSize,
-                  config.pdfCompressionQuality,
-                  config.pdfEnableCompression,
-                  config.debug,
-                )
-                finalFormat = fmt
-
-                await imageCache.setProcessed(
-                  (image as any).galleryId,
-                  (image as any).mediaId,
-                  image.index,
-                  finalBuffer,
-                  finalFormat,
-                ).catch((err) => {
-                  if (config.debug) logger.warn(`保存处理缓存失败: ${err.message}`)
-                })
-              }
-            } else {
-              const { buffer: convertedBuffer, finalFormat: fmt } = await convertImageForMode(
-                processor.wasm,
-                image.buffer,
-                image.extension,
-                'pdf',
-                config,
-              )
-              finalBuffer = await conditionallyCompressJpeg(
-                processor.wasm,
-                convertedBuffer,
-                fmt,
-                config.pdfJpegRecompressionSize,
-                config.pdfCompressionQuality,
-                config.pdfEnableCompression,
-                config.debug,
-              )
-              finalFormat = fmt
-            }
-
-            // 添加图片到 PDF
+            // 添加图片到 PDF，多页时新增页面
             if (pageCount > 1) {
               doc.addPage({ size: 'A4' })
             }
             doc.image(finalBuffer, 0, 0, {
-              fit: [595, 842], // A4 尺寸
+              fit: [595, 842], // A4 尺寸 (595x842pt)
               align: 'center',
               valign: 'center',
             })
@@ -127,7 +144,7 @@ export async function createPdf(
             if (config.debug) onProgress(`处理第 ${pageCount} 张图片失败，已跳过。`)
           }
 
-          // 手动GC, 释放内存
+          // 手动 GC 释放内存（每 50 页触发一次）
           if (pageCount % 50 === 0 && global.gc) {
             global.gc()
           }
@@ -136,19 +153,14 @@ export async function createPdf(
         if (pageCount === 0) throw new Error('没有成功处理任何图片，无法生成 PDF')
         onProgress(`正在保存 PDF (${pageCount} 张图片)...`)
       } catch (error) {
-        shouldContinue = false
+        abortController.abort()
         throw error
       }
     })()
 
     return new Promise<string>(async (resolve, reject) => {
-      let isResolved = false
-
       const cleanup = async (error?: Error) => {
-        if (isResolved) return
-        isResolved = true
-        shouldContinue = false
-
+        abortController.abort()
         writeStream.removeAllListeners()
         doc.removeAllListeners()
 
@@ -166,9 +178,6 @@ export async function createPdf(
         await processingPromise
 
         writeStream.on('finish', async () => {
-          if (isResolved) return
-          isResolved = true
-
           try {
             const stats = fs.statSync(tempPdfPath)
             const sizeInMB = (stats.size / 1024 / 1024).toFixed(2)
