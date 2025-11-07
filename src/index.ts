@@ -57,6 +57,8 @@ nh.search <关键词/ID> [选项]
 - 回复 B - 返回上一页
 - 回复 N - 退出交互
 
+> 注: 图片菜单模式和文本列表模式均支持以上交互
+
 ---
 
 #### 2. 下载漫画 - \`nh.download\`
@@ -110,6 +112,7 @@ export function apply(ctx: Context, config: Config) {
       config,
       () => plugin.getApiService(),
       () => plugin.getNhentaiService(),
+      () => plugin.getMenuService(),
       (session) => plugin.ensureInitialized(session)
     )
 

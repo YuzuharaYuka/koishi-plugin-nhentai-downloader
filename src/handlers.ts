@@ -4,6 +4,7 @@ import { logger, bufferToDataURI, sleep } from './utils'
 import { Gallery, SearchResult, Tag } from './types'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
+import { MenuService } from './services/menu'
 import { readFile, rm } from 'fs/promises'
 import { pathToFileURL } from 'url'
 
@@ -166,6 +167,131 @@ export async function handleIdSearch(
   }
 
   await sendWithOptionalForward(session, messageContent, useForward, forwardSupportedPlatforms)
+}
+
+export async function handleKeywordSearchWithMenu(
+  session: Session,
+  query: string,
+  options: SearchOptions,
+  apiService: ApiService,
+  nhentaiService: NhentaiService,
+  menuService: MenuService,
+  config: Config,
+): Promise<void> {
+  const sort = options.sort
+  const lang = options.lang || config.defaultSearchLanguage
+  const limit = config.imageMenuColumns * config.imageMenuMaxRows
+
+  const queryQueue = buildSearchQueryQueue(query, lang)
+  let effectiveQuery = ''
+  let initialResult: SearchResult | null = null
+
+  for (const { query: currentQuery, message } of queryQueue) {
+    effectiveQuery = currentQuery
+    if (message) await session.send(message)
+    const result = await apiService.searchGalleries(effectiveQuery, 1, sort)
+    if (result?.result.length > 0) {
+      initialResult = result
+      break
+    }
+  }
+
+  if (!initialResult) {
+    await session.send(`未找到与"${query}"相关的漫画。`)
+    return
+  }
+
+  try {
+    let allResults: Partial<Gallery>[] = initialResult.result
+    let totalApiPages = initialResult.num_pages
+    let fetchedApiPage = 1
+    let currentDisplayPage = 1
+
+    const fetchApiPage = async (apiPageNum: number) => {
+      const result = await apiService.searchGalleries(effectiveQuery, apiPageNum, sort)
+      if (!result?.result.length) return false
+      allResults.push(...result.result)
+      if (result.num_pages > totalApiPages) totalApiPages = result.num_pages
+      fetchedApiPage = apiPageNum
+      return true
+    }
+
+    while (true) {
+      const startIndex = (currentDisplayPage - 1) * limit
+      const endIndex = startIndex + limit
+
+      while (endIndex > allResults.length && fetchedApiPage < totalApiPages) {
+        await session.send(
+          h('quote', { id: session.messageId }) +
+            `正在加载更多结果 (第 ${fetchedApiPage + 1} / ${totalApiPages} API页)...`,
+        )
+        await fetchApiPage(fetchedApiPage + 1)
+      }
+
+      const displayedResults = allResults.slice(startIndex, endIndex)
+
+      if (displayedResults.length === 0) {
+        await session.send(currentDisplayPage > 1 ? '没有更多结果了。' : `未找到与"${query}"相关的漫画。`)
+        if (currentDisplayPage > 1) currentDisplayPage--
+        else break
+        continue
+      }
+
+      // 使用图片菜单显示搜索结果
+      await menuService.sendSearchMenu(
+        session,
+        displayedResults,
+        initialResult.num_pages * initialResult.per_page
+      )
+
+      const totalDisplayPages = Math.ceil(allResults.length / limit)
+      const prompts = ['回复序号下载']
+      if (currentDisplayPage > 1) prompts.push('[B]上一页')
+      if (currentDisplayPage < totalDisplayPages) prompts.push('[F]下一页')
+      prompts.push('[N]退出')
+      await session.send(prompts.join('，') + '。')
+
+      const reply = await session.prompt(config.promptTimeout * 1000)
+      if (!reply) {
+        await session.send('操作超时，已自动取消。')
+        menuService.clearMenu(session)
+        break
+      }
+
+      const lowerReply = reply.toLowerCase()
+      if (lowerReply === 'n') {
+        await session.send('操作已取消。')
+        menuService.clearMenu(session)
+        break
+      } else if (lowerReply === 'f' && currentDisplayPage < totalDisplayPages) {
+        currentDisplayPage++
+      } else if (lowerReply === 'b' && currentDisplayPage > 1) {
+        currentDisplayPage--
+      } else if (/^\d+$/.test(reply)) {
+        const selectedIndex = parseInt(reply, 10) - 1
+        if (selectedIndex >= 0 && selectedIndex < displayedResults.length) {
+          const gallery = displayedResults[selectedIndex]
+          if (gallery?.id) {
+            menuService.clearMenu(session)
+            await session.execute(`nh.download ${gallery.id}`)
+            return
+          }
+        }
+        await session.send('无效的选择。')
+      } else {
+        await session.send('无效的输入，已退出交互。')
+        menuService.clearMenu(session)
+        break
+      }
+    }
+
+  } catch (error) {
+    logger.error(`图片菜单处理失败: ${error.message}`)
+    await session.send('菜单生成失败，将使用传统模式显示搜索结果。')
+
+    // 降级到传统搜索模式
+    await handleKeywordSearch(session, query, options, apiService, nhentaiService, config)
+  }
 }
 
 export async function handleKeywordSearch(

@@ -15,6 +15,10 @@ export interface Config {
   promptTimeout: number;
   imageSendDelay: number;
 
+  enableImageMenu: boolean;
+  imageMenuColumns: number;
+  imageMenuMaxRows: number;
+
   downloadPath: string;
   prependIdToFile: boolean;
   pdfSendMethod: 'buffer' | 'file';
@@ -86,6 +90,17 @@ export const Config: Schema<Config> = Schema.intersect([
     showLinkInSearch: Schema.boolean()
       .description('搜索结果中包含 nhentai 链接')
       .default(true),
+    enableImageMenu: Schema.boolean()
+      .description('将搜索结果以图片菜单形式展示')
+      .default(true),
+    imageMenuColumns: Schema.number()
+      .min(2).max(4).step(1)
+      .description('图片菜单每行显示的画廊数量')
+      .default(3),
+    imageMenuMaxRows: Schema.number()
+      .min(1).max(4).step(1)
+      .description('图片菜单最大行数')
+      .default(3),
   }).description('搜索设置'),
 
   // ==================== 消息设置 ====================

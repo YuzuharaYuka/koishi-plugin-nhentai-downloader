@@ -3,7 +3,8 @@ import { Config } from './config'
 import { logger } from './utils'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
-import { handleIdSearch, handleKeywordSearch, SearchOptions } from './handlers'
+import { MenuService } from './services/menu'
+import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, SearchOptions } from './handlers'
 import { handleDownloadCommand, DownloadOptions } from './handlers'
 import { galleryUrlRegex } from './constants'
 
@@ -34,6 +35,7 @@ export function registerSearchCommands(
   config: Config,
   getApiService: () => ApiService,
   getNhentaiService: () => NhentaiService,
+  getMenuService: () => MenuService | null,
   ensureInitialized: (session: Session) => boolean,
 ): Command {
   const nhCmd = ctx.command('nh', 'Nhentai 漫画下载与搜索工具').alias('nhentai')
@@ -57,6 +59,7 @@ export function registerSearchCommands(
 
       const apiService = getApiService()
       const nhentaiService = getNhentaiService()
+      const menuService = getMenuService()
 
       const validSorts = ['popular', 'popular-today', 'popular-week']
       const validLangs = ['chinese', 'japanese', 'english', 'all']
@@ -82,11 +85,16 @@ export function registerSearchCommands(
           })
           await promptForDownload(session, query, config.promptTimeout)
         } else {
-          await handleKeywordSearch(session, query, searchOptions, apiService, nhentaiService, config, {
-            useForward: config.useForwardForSearch,
-            showTags: config.showTagsInSearch,
-            showLink: config.showLinkInSearch,
-          })
+          // 根据配置选择使用图片菜单还是传统模式
+          if (config.enableImageMenu && menuService) {
+            await handleKeywordSearchWithMenu(session, query, searchOptions, apiService, nhentaiService, menuService, config)
+          } else {
+            await handleKeywordSearch(session, query, searchOptions, apiService, nhentaiService, config, {
+              useForward: config.useForwardForSearch,
+              showTags: config.showTagsInSearch,
+              showLink: config.showLinkInSearch,
+            })
+          }
         }
       } catch (error) {
         logger.error(`[搜索] 命令执行失败: %o`, error)
@@ -198,9 +206,10 @@ export function registerAllCommands(
   config: Config,
   getApiService: () => ApiService,
   getNhentaiService: () => NhentaiService,
+  getMenuService: () => MenuService | null,
   ensureInitialized: (session: Session) => boolean,
 ): void {
-  const nhCmd = registerSearchCommands(ctx, config, getApiService, getNhentaiService, ensureInitialized)
+  const nhCmd = registerSearchCommands(ctx, config, getApiService, getNhentaiService, getMenuService, ensureInitialized)
   registerDownloadCommands(ctx, config, getNhentaiService, ensureInitialized, nhCmd)
   registerRandomCommands(ctx, config, getNhentaiService, ensureInitialized, nhCmd)
 }

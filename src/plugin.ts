@@ -4,6 +4,7 @@ import { logger } from './utils'
 import { Processor, initWasmProcessor } from './processor'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
+import { MenuService } from './services/menu'
 
 /**
  * 插件主类，负责初始化和管理所有服务。
@@ -12,8 +13,9 @@ export class NhentaiPlugin {
   private processor: Processor | null = null
   private apiService: ApiService
   private nhentaiService: NhentaiService | null = null
+  private menuService: MenuService | null = null
   private isInitialized = false
-
+ 
   constructor(private ctx: Context, private config: Config) {
     if (config.debug) {
       logger.info('调试模式已启用')
@@ -34,9 +36,18 @@ export class NhentaiPlugin {
     this.processor = new Processor(this.ctx, this.config)
     await this.processor.initializeCache()
     this.nhentaiService = new NhentaiService(this.apiService, this.config, this.processor)
+
+    // 初始化菜单服务
+    if (this.config.enableImageMenu) {
+      this.menuService = new MenuService(this.config, this.nhentaiService)
+      if (this.config.debug) {
+        logger.info('图片菜单服务已启用')
+      }
+    }
+
     this.isInitialized = true
   }
- 
+
   /**
    * 确保插件已初始化，否则向用户发送提示。
    */
@@ -66,6 +77,13 @@ export class NhentaiPlugin {
   }
 
   /**
+   * 获取 MenuService 实例。
+   */
+  public getMenuService(): MenuService | null {
+    return this.menuService
+  }
+
+  /**
    * 获取插件配置。
    */
   public getConfig(): Config {
@@ -76,6 +94,7 @@ export class NhentaiPlugin {
    * 清理插件资源，支持热重载。
    */
   public dispose(): void {
+    this.menuService?.dispose()
     this.nhentaiService?.dispose()
     this.apiService?.dispose()
     this.processor?.dispose()

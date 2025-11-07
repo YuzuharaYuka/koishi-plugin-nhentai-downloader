@@ -136,7 +136,7 @@ export class ImageCache {
     try {
       await fs.mkdir(this.cacheDir, { recursive: true })
       await this.loadIndex()
-      if (this.config.debug) logger.info(`缓存已初始化: ${this.cacheDir}`)
+      if (this.config.debug) logger.info(`图片缓存已初始化: ${this.cacheDir}`)
     } catch (error) {
       logger.warn(`缓存初始化失败: ${error.message}`)
     }
@@ -164,7 +164,7 @@ export class ImageCache {
       }
 
       await this.saveIndex(validEntries)
-      if (this.config.debug) logger.info(`加载 ${validEntries.length} 个缓存条目`)
+      if (this.config.debug) logger.info(`加载 ${validEntries.length} 个图片缓存条目`)
     } catch (error) {
       if (error.code !== 'ENOENT') logger.warn(`加载索引失败: ${error.message}`)
       this.entries.clear()
