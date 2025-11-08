@@ -3,7 +3,7 @@ name = "wasm-image-processor"
 version = "0.1.0"
 edition = "2021"
 authors = ["Koishi Plugin Team"]
-description = "High-performance image processing WASM module for Koishi nhentai-downloader plugin"
+description = "Image processing WASM module for Koishi nhentai-downloader plugin"
 license = "MIT"
 repository = "https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader"
 
@@ -16,13 +16,10 @@ default = ["console_error_panic_hook"]
 [dependencies]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
-# image 不启用 rayon，因为 WASM 是单线程环境。rayon 在非 WASM 下通过 [target] 条件编译启用
 image = { version = "0.25.5", default-features = false, features = ["png", "jpeg", "webp"] }
 console_error_panic_hook = { version = "0.1", optional = true }
-# getrandom 0.3 需要启用 wasm_js feature 来支持 WASM 环境
 getrandom = { version = "0.3", features = ["wasm_js"] }
 rand = "0.9"
-# rayon 仅用于非 WASM 目标的并行处理
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.10"
 
@@ -30,9 +27,10 @@ rayon = "1.10"
 wasm-bindgen-test = "0.3"
 
 [profile.release]
-opt-level = "z"  # Size optimization for WASM
+opt-level = "z"
 codegen-units = 1
-lto = true  # Link-time optimization
+lto = true
+panic = "abort"
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-O4", "--enable-bulk-memory", "--enable-simd"]  # Aggressive WASM optimization
+wasm-opt = ["-O4", "--enable-bulk-memory", "--enable-simd"] 

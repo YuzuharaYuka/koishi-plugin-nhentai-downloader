@@ -19,9 +19,10 @@
   ],
   "license": "MIT",
   "scripts": {
-    "build": "npm run build:wasm && npm run build:ts",
-    "build:ts": "tsc",
+    "build": "npm run build:wasm && cd ../.. && npm run build -- nhentai-downloader",
     "build:wasm": "cd wasm-image-processor && cross-env RUSTFLAGS=\"-C target-feature=+simd128 --cfg getrandom_backend=\\\"wasm_js\\\"\" wasm-pack build --target nodejs --release --out-dir ../wasm-dist && node ../scripts/post-wasm-build.js",
+    "clean": "cd ../.. && npm run clean",
+    "pub": "cd ../.. && npm run pub -- nhentai-downloader",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -32,7 +33,8 @@
     "downloader",
     "manga",
     "comic",
-    "search"
+    "search",
+    "menu"
   ],
   "peerDependencies": {
     "koishi": "^4.18.0"

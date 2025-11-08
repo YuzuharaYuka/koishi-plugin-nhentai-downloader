@@ -1,4 +1,13 @@
 - name: yakumo
+  config:
+    pipeline:
+      build:
+        - tsc
+        - esbuild
+      clean:
+        - tsc --clean
+        - run: rm -rf wasm-dist
+- name: yakumo/run
 - name: yakumo/list
 - name: yakumo/prepare
 - name: yakumo/publish
