@@ -7,22 +7,77 @@ body:
   - type: checkboxes
     id: checklist
     attributes:
-      label: 核对清单
-      description: 在提交前，请确保您已完成以下检查。
+      label: 提交前检查
+      description: '快速检查，帮助您确保问题有效'
       options:
-        - label: 我已在 [Issues 列表](https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/issues) 中搜索，确认了没有重复的问题。
+        - label: 已搜索 [Issues 列表](https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/issues)，确认无重复
           required: true
-        - label: 我正在使用插件的最新版本。
-          required: true
-        - label: 我已检查并确认这不是由我的 Koishi 配置或网络环境（如无法访问 nhentai.net）引起的问题。
+        - label: 已查阅 [README](https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader#readme) 配置说明
           required: true
 
   - type: input
     id: plugin_version
     attributes:
-      label: 插件版本
-      description: '您可以在 Koishi 控制台的插件市场中查看 `nhentai-downloader` 的版本号。'
-      placeholder: '例如: 1.0.1'
+      label: 插件版本 *
+      description: '在 Koishi 插件市场查看'
+      placeholder: '1.4.1'
+    validations:
+      required: true
+
+  - type: dropdown
+    id: problem_command
+    attributes:
+      label: 哪个功能出现问题？ *
+      description: '这能帮助快速定位问题'
+      options:
+        - label: 'nh.search / nh搜索 (搜索漫画)'
+        - label: 'h.download / nh下载 (下载漫画)'
+        - label: 'nh.popular / nh热门 (热门漫画)'
+        - label: 'nh.random / 天降好运 (随机漫画)'
+        - label: '链接自动识别 (URL 识别)'
+        - label: '图片菜单展示'
+        - label: '文件输出 (PDF/ZIP/图片)'
+        - label: '文件加密功能'
+        - label: '插件配置/加载'
+        - label: '其他'
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue_description
+    attributes:
+      label: 问题描述 *
+      description: '简洁地说明出现了什么问题'
+      placeholder: |
+        问题是什么？
+        例如：执行 nh搜索 touhou 后收到错误...
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 如何复现？
+      description: '清晰的步骤让我们快速重现问题'
+      placeholder: |
+        1. 执行指令：...
+        2. 使用参数：...
+        3. 观察到：...
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误日志 *
+      description: '从 Koishi 控制台复制与问题相关的日志'
+      placeholder: |
+        ```
+        [时间] [nhentai-downloader] 完整错误信息
+        ```
+      render: markdown
     validations:
       required: true
 
@@ -30,66 +85,20 @@ body:
     id: koishi_version
     attributes:
       label: Koishi 版本
-      description: '您可以在 Koishi 控制台的仪表盘页面左下角找到。'
-      placeholder: '例如: 4.18.9'
-    validations:
-      required: true
+      description: '控制台仪表盘页面查看'
+      placeholder: '4.18.0'
 
-  - type: dropdown
-    id: adapter
+  - type: input
+    id: platform
     attributes:
-      label: 发生问题的适配器平台
-      description: '问题主要出现在哪个聊天平台？'
-      options:
-        - OneBot
-        - QQ
-        - Discord
-        - Telegram
-        - 其他
-    validations:
-      required: true
-
-  - type: dropdown
-    id: problem_command
-    attributes:
-      label: 哪个指令或功能出现了问题？
-      description: '请选择与问题最相关的部分。'
-      multiple: true
-      options:
-        - nh.search (搜索)
-        - nh.download (下载)
-        - nh.popular (热门)
-        - nh.random (随机)
-        - 链接自动识别
-        - 文件输出 (PDF/ZIP/图片)
-        - 插件配置/加载
-        - 其他
-    validations:
-      required: true
-
-  - type: textarea
-    id: reproduce
-    attributes:
-      label: 复现步骤
-      description: 请清晰地描述您是如何触发这个问题的。如果您修改了默认配置，也请一并说明。
-      placeholder: '...'
-      render: markdown
-    validations:
-      required: true
-
-  - type: textarea
-    id: logs
-    attributes:
-      label: 相关日志与截图
-      description: 请将 Koishi 控制台中与错误相关的 **完整日志** 粘贴在此处。如果有截图，也请一并附上。这对于定位问题至关重要。
-      placeholder: '...'
-      render: markdown
-    validations:
-      required: true
+      label: 适配器平台
+      description: '例如：OneBot v11, Discord, Telegram'
+      placeholder: 'OneBot v11 (NapCat)'
 
   - type: textarea
     id: additional_info
     attributes:
-      label: 补充信息
-      description: '还有其他有助于我们理解问题背景的信息吗？例如，您的操作系统、Node.js 版本等。'
+      label: 补充信息（可选）
+      description: '代理配置、网络环境、其他插件组合等可能相关的信息'
+      placeholder: '例如：使用了代理、安装了其他插件、特殊网络环境等'
       render: markdown
