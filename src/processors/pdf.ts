@@ -1,5 +1,4 @@
 // PDF 生成模块，负责创建和加密 PDF 文件。
-import PDFDocument from 'pdfkit'
 import * as fs from 'fs'
 import * as path from 'path'
 import { rm } from 'fs/promises'
@@ -7,6 +6,21 @@ import { DownloadedImage } from './types'
 import { Config } from '../config'
 import { logger } from '../utils'
 import { convertImageForMode, conditionallyCompressJpeg } from './images'
+
+// 延迟加载 pdfkit（避免在模块初始化时加载 canvas 依赖）
+let PDFDocument: any = null
+
+async function ensurePdfKitLoaded() {
+  if (!PDFDocument) {
+    try {
+      const pdfkitModule = await import('pdfkit')
+      PDFDocument = pdfkitModule.default
+    } catch (error) {
+      throw new Error(`Failed to load pdfkit: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  return PDFDocument
+}
 
 // 扩展的图片类型，包含处理相关的额外字段
 interface ProcessingImage extends DownloadedImage {
@@ -93,6 +107,9 @@ export async function createPdf(
   config: Config,
   baseDir: string,
 ): Promise<string> {
+  // 延迟加载 pdfkit（仅在需要时加载，避免早期加载 canvas 依赖）
+  const PDFDocClass = await ensurePdfKitLoaded()
+
   const downloadDir = path.resolve(baseDir, config.downloadPath)
   const tempPdfPath = path.resolve(downloadDir, `temp_${galleryId}_${Date.now()}.pdf`)
   const debugLog = config.debug // 缓存 debug 标志，避免多次访问
@@ -105,7 +122,7 @@ export async function createPdf(
       docOptions.ownerPassword = password
     }
 
-    const doc = new PDFDocument(docOptions)
+    const doc = new PDFDocClass(docOptions)
     const writeStream = fs.createWriteStream(tempPdfPath)
     let pageCount = 0
 

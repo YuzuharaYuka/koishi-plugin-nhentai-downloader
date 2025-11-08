@@ -1,7 +1,22 @@
-import { createCanvas, loadImage, SKRSContext2D, GlobalFonts } from '@napi-rs/canvas'
 import { Gallery } from '../types'
 import { Config } from '../config'
 import { logger } from '../utils'
+
+// 延迟加载 @napi-rs/canvas（避免在模块初始化时加载）
+let canvasModule: any = null
+let isCanvasInitialized = false
+
+async function ensureCanvasInitialized() {
+  if (!isCanvasInitialized) {
+    try {
+      canvasModule = await import('@napi-rs/canvas')
+      isCanvasInitialized = true
+    } catch (error) {
+      throw new Error(`Failed to load @napi-rs/canvas: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  return canvasModule
+}
 
 // 菜单生成器配置接口
 export interface MenuGeneratorOptions {
@@ -67,6 +82,7 @@ const CJK_FONT_FAMILY = '"Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-seri
 export class MenuGenerator {
   private options: MenuGeneratorOptions
   private fontLoaded: boolean = false
+  private canvasLib: any = null
 
   constructor(private config: Config, options?: Partial<MenuGeneratorOptions>) {
     this.options = { ...defaultOptions, ...options }
@@ -74,13 +90,14 @@ export class MenuGenerator {
   }
 
   // 加载中文字体
-  private loadFonts(): void {
+  private async loadFonts(): Promise<void> {
     if (this.fontLoaded) return
 
     try {
+      const canvasLib = await ensureCanvasInitialized()
       // @napi-rs/canvas 会自动加载系统字体，无需手动注册
-      const systemFonts = GlobalFonts.families
-      const cjkFonts = systemFonts.filter(font =>
+      const systemFonts = canvasLib.GlobalFonts.families
+      const cjkFonts = systemFonts.filter((font: any) =>
         CJK_FONT_KEYWORDS.some(keyword =>
           font.family.toLowerCase().includes(keyword)
         )
@@ -106,7 +123,7 @@ export class MenuGenerator {
   }
 
   // 截断文本以适应宽度
-  private truncateText(ctx: SKRSContext2D, text: string, maxWidth: number): string {
+  private truncateText(ctx: any, text: string, maxWidth: number): string {
     const ellipsis = '...'
     let truncated = text
 
@@ -118,7 +135,7 @@ export class MenuGenerator {
   }
 
   // 分行截断长标题
-  private splitLongTitle(ctx: SKRSContext2D, title: string, maxLineWidth: number): { firstLine: string; secondLine: string } {
+  private splitLongTitle(ctx: any, title: string, maxLineWidth: number): { firstLine: string; secondLine: string } {
     let firstLine = title, secondLine = ''
     if (ctx.measureText(title).width <= maxLineWidth) return { firstLine, secondLine }
 
@@ -154,7 +171,7 @@ export class MenuGenerator {
 
   // 绘制语言标签
   private drawLanguageTag(
-    ctx: SKRSContext2D,
+    ctx: any,
     languages: string[],
     x: number,
     y: number,
@@ -177,7 +194,7 @@ export class MenuGenerator {
   }
 
   // 绘制圆角矩形
-  private drawRoundedRect(ctx: SKRSContext2D, x: number, y: number, width: number, height: number, radius: number): void {
+  private drawRoundedRect(ctx: any, x: number, y: number, width: number, height: number, radius: number): void {
     ctx.beginPath()
     ctx.moveTo(x + radius, y)
     ctx.lineTo(x + width - radius, y)
@@ -193,13 +210,19 @@ export class MenuGenerator {
 
   // 绘制单个画廊卡片
   private async drawGalleryCard(
-    ctx: SKRSContext2D,
+    ctx: any,
     gallery: Partial<Gallery>,
     thumbnail: Buffer,
     index: number,
     x: number,
     y: number
   ): Promise<void> {
+    // 获取已初始化的 canvas 库
+    if (!this.canvasLib) {
+      this.canvasLib = await ensureCanvasInitialized()
+    }
+    const { loadImage } = this.canvasLib
+
     const { thumbWidth, thumbHeight, infoFontSize, indexFontSize } = this.options
     const cardHeight = thumbHeight + CARD_STYLES.infoAreaHeight
 
@@ -310,6 +333,10 @@ export class MenuGenerator {
     totalResults?: number,
     startIndex?: number
   ): Promise<Buffer> {
+    // 延迟加载 canvas（仅在需要时加载）
+    const canvasLib = await ensureCanvasInitialized()
+    const { createCanvas, loadImage } = canvasLib
+
     const { columns, maxRows, thumbWidth, thumbHeight, padding, gap, titleFontSize, infoFontSize } = this.options
 
     // 计算实际显示的画廊数量
@@ -383,6 +410,12 @@ export class MenuGenerator {
 
   // 生成单个画廊的详细信息卡片
   async generateGalleryCard(gallery: Gallery, coverImage: Buffer): Promise<Buffer> {
+    // 延迟加载 canvas（仅在需要时加载）
+    if (!this.canvasLib) {
+      this.canvasLib = await ensureCanvasInitialized()
+    }
+    const { createCanvas, loadImage } = this.canvasLib
+
     const cardWidth = 600, cardHeight = 800, coverWidth = 400, coverHeight = 550
     const canvas = createCanvas(cardWidth, cardHeight)
     const ctx = canvas.getContext('2d')

@@ -1,14 +1,28 @@
 // ZIP 生成模块，负责创建和加密 ZIP 压缩文件
-import archiver from 'archiver'
 import { PassThrough } from 'stream'
 import { DownloadedImage } from './types'
 
-// 注册加密 ZIP 格式（仅在未注册时注册，避免热重载时重复注册）
-import archiverZipEncrypted from 'archiver-zip-encrypted'
-try {
-  archiver.registerFormat('zip-encrypted', archiverZipEncrypted)
-} catch {
-  // 格式已注册，忽略错误
+// 延迟加载 archiver 及其加密格式（避免在模块初始化时加载）
+let archiverModule: any = null
+let isArchiverInitialized = false
+
+async function ensureArchiverInitialized() {
+  if (!isArchiverInitialized) {
+    try {
+      archiverModule = await import('archiver')
+      const archiverZipEncrypted = await import('archiver-zip-encrypted')
+      // 注册加密 ZIP 格式（仅在未注册时注册，避免热重载时重复注册）
+      try {
+        archiverModule.default.registerFormat('zip-encrypted', archiverZipEncrypted.default)
+      } catch {
+        // 格式已注册，忽略错误
+      }
+      isArchiverInitialized = true
+    } catch (error) {
+      throw new Error(`Failed to load archiver: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  return archiverModule.default
 }
 
 export async function createZip(
@@ -17,10 +31,13 @@ export async function createZip(
   zipCompressionLevel: number,
   folderName?: string,
 ): Promise<Buffer> {
+  // 延迟加载 archiver（仅在需要时加载）
+  const archiver = await ensureArchiverInitialized()
+
   const isEncrypted = !!password
   const format = isEncrypted ? 'zip-encrypted' : 'zip'
   // 配置压缩选项和加密参数
-  const archiveOptions: archiver.ArchiverOptions & { encryptionMethod?: string; password?: string } = {
+  const archiveOptions: any = {
     zlib: { level: zipCompressionLevel },
   }
   if (isEncrypted) {
@@ -28,7 +45,7 @@ export async function createZip(
     archiveOptions.password = password
   }
 
-  const zip = archiver(format as archiver.Format, archiveOptions)
+  const zip = archiver(format, archiveOptions)
   const stream = new PassThrough()
   const buffers: Buffer[] = []
 
