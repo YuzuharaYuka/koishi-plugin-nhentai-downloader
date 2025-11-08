@@ -31,7 +31,7 @@ body:
   - type: textarea
     id: feature_description
     attributes:
-      label: "功能描述 *"
+      label: "功能描述"
       description: "简洁、清晰地描述您的想法"
       placeholder: |
         想要什么功能？
@@ -70,7 +70,7 @@ body:
   - type: textarea
     id: reference
     attributes:
-      label: "参考资源（可选）"
+      label: "参考资源"
       description: "如果有相关链接、截图或代码示例"
       placeholder: |
         例如：
