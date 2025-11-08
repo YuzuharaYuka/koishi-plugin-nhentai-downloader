@@ -1,38 +1,38 @@
-name: '功能请求 '
+name: "功能请求"
 description: 提出新功能建议或对现有功能的改进。
-title: '[Feat] '
-labels: ['enhancement']
+title: "[Feat] "
+labels: ["enhancement"]
 
 body:
   - type: markdown
     attributes:
       value: |
         感谢您的建议！快速提示：
-        - 请先浏览 [README](https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader#readme) 确认功能未实现
-        - 检查 [Issues 列表](https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/issues) 是否有类似请求
+        - 请先浏览 README 确认功能未实现
+        - 检查 Issues 列表是否有类似请求
 
   - type: dropdown
     id: type
     attributes:
-      label: 功能类型 *
-      description: '快速分类您的建议'
+      label: "功能类型"
+      description: "快速分类您的建议"
       options:
-        - label: '搜索功能 (新的筛选、排序条件)'
-        - label: '下载功能 (新的格式、处理方式)'
-        - label: '交互体验 (菜单、提示、界面)'
-        - label: '链接识别增强'
-        - label: '配置项改进'
-        - label: '性能或稳定性'
-        - label: '文档或帮助'
-        - label: '其他'
+        - label: "搜索功能 (新的筛选、排序条件)"
+        - label: "下载功能 (新的格式、处理方式)"
+        - label: "交互体验 (菜单、提示、界面)"
+        - label: "链接识别增强"
+        - label: "配置项改进"
+        - label: "性能或稳定性"
+        - label: "文档或帮助"
+        - label: "其他"
     validations:
       required: true
 
   - type: textarea
     id: feature_description
     attributes:
-      label: 功能描述 *
-      description: '简洁、清晰地描述您的想法'
+      label: "功能描述 *"
+      description: "简洁、清晰地描述您的想法"
       placeholder: |
         想要什么功能？
         例如：支持按标签筛选搜索结果
@@ -43,8 +43,8 @@ body:
   - type: textarea
     id: use_case
     attributes:
-      label: 为什么需要这个功能？
-      description: '这能帮助理解优先级和价值'
+      label: "为什么需要这个功能？"
+      description: "这能帮助理解优先级和价值"
       placeholder: |
         例如：
         - 目前需要手动过滤，效率低
@@ -57,8 +57,8 @@ body:
   - type: textarea
     id: alternatives
     attributes:
-      label: 有替代方案吗？
-      description: '您目前怎么解决这个需求（可选）'
+      label: "有替代方案吗？"
+      description: "您目前怎么解决这个需求（可选）"
       placeholder: |
         例如：
         - 目前用 X 替代
@@ -70,8 +70,8 @@ body:
   - type: textarea
     id: reference
     attributes:
-      label: 参考资源（可选）
-      description: '如果有相关链接、截图或代码示例'
+      label: "参考资源（可选）"
+      description: "如果有相关链接、截图或代码示例"
       placeholder: |
         例如：
         - 参考文档: ...

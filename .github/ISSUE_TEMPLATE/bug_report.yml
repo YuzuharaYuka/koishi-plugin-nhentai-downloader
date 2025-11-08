@@ -1,53 +1,53 @@
 name: Bug Report
 description: 报告插件运行中遇到的问题。
-title: '[Bug] '
-labels: ['bug']
+title: "[Bug] "
+labels: ["bug"]
 
 body:
   - type: checkboxes
     id: checklist
     attributes:
-      label: 提交前检查
-      description: '快速检查，帮助您确保问题有效'
+      label: "提交前检查"
+      description: "快速检查，帮助您确保问题有效"
       options:
-        - label: 已搜索 [Issues 列表](https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/issues)，确认无重复
+        - label: "已搜索 Issues 列表，确认无重复"
           required: true
-        - label: 已查阅 [README](https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader#readme) 配置说明
+        - label: "已查阅 README 配置说明"
           required: true
 
   - type: input
     id: plugin_version
     attributes:
-      label: 插件版本
-      description: '在 Koishi 插件市场或插件配置查看'
-      placeholder: '1.4.1'
+      label: "插件版本"
+      description: "在 Koishi 插件市场或插件配置查看"
+      placeholder: "1.4.1"
     validations:
       required: true
 
   - type: dropdown
     id: problem_command
     attributes:
-      label: 哪个功能出现问题？
-      description: '这能帮助快速定位问题'
+      label: "哪个功能出现问题？"
+      description: "这能帮助快速定位问题"
       options:
-        - label: 'nh.search / nh搜索 (搜索漫画)'
-        - label: 'h.download / nh下载 (下载漫画)'
-        - label: 'nh.popular / nh热门 (热门漫画)'
-        - label: 'nh.random / 天降好运 (随机漫画)'
-        - label: '链接自动识别 (URL 识别)'
-        - label: '图片菜单展示'
-        - label: '文件输出 (PDF/ZIP/图片)'
-        - label: '文件加密功能'
-        - label: '插件配置/加载'
-        - label: '其他'
+        - label: "nh.search / nh搜索 (搜索漫画)"
+        - label: "nh.download / nh下载 (下载漫画)"
+        - label: "nh.popular / nh热门 (热门漫画)"
+        - label: "nh.random / 天降好运 (随机漫画)"
+        - label: "链接自动识别 (URL 识别)"
+        - label: "图片菜单展示"
+        - label: "文件输出 (PDF/ZIP/图片)"
+        - label: "文件加密功能"
+        - label: "插件配置/加载"
+        - label: "其他"
     validations:
       required: true
 
   - type: textarea
     id: issue_description
     attributes:
-      label: 问题描述
-      description: '简洁地说明出现了什么问题'
+      label: "问题描述"
+      description: "简洁地说明出现了什么问题"
       placeholder: |
         问题是什么？
         例如：执行 nh搜索 touhou 后收到错误...
@@ -58,8 +58,8 @@ body:
   - type: textarea
     id: reproduce
     attributes:
-      label: 如何复现？
-      description: '清晰的步骤让我们快速重现问题'
+      label: "如何复现？"
+      description: "清晰的步骤让我们快速重现问题"
       placeholder: |
         1. 执行指令：...
         2. 使用参数：...
@@ -71,8 +71,8 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: 错误日志
-      description: '从 Koishi 控制台复制与问题相关的日志'
+      label: "错误日志"
+      description: "从 Koishi 控制台复制与问题相关的日志"
       placeholder: |
         ```
         [时间] [nhentai-downloader] 完整错误信息
@@ -84,34 +84,34 @@ body:
   - type: input
     id: koishi_version
     attributes:
-      label: Koishi 版本
-      description: '控制台仪表盘页面查看'
-      placeholder: '4.18.0'
+      label: "Koishi 版本"
+      description: "控制台仪表盘页面查看"
+      placeholder: "4.18.0"
 
   - type: input
     id: platform
     attributes:
-      label: 适配器平台
-      description: '例如：OneBot v11, Discord, Telegram'
-      placeholder: 'OneBot v11 (NapCat)'
+      label: "适配器平台"
+      description: "例如：OneBot v11, Discord, Telegram"
+      placeholder: "OneBot v11 (NapCat)"
 
   - type: dropdown
     id: environment
     attributes:
-      label: 运行环境
-      description: '选择您的运行环境'
+      label: "运行环境"
+      description: "选择您的运行环境"
       options:
-        - label: 'Windows (本地)'
-        - label: 'Linux (本地)'
-        - label: 'macOS (本地)'
-        - label: 'Docker'
-        - label: '云服务器 (阿里云、腾讯云等)'
-        - label: '其他'
+        - label: "Windows (本地)"
+        - label: "Linux (本地)"
+        - label: "macOS (本地)"
+        - label: "Docker"
+        - label: "云服务器 (阿里云、腾讯云等)"
+        - label: "其他"
 
   - type: textarea
     id: additional_info
     attributes:
-      label: 补充信息（可选）
-      description: '代理配置、网络环境、其他插件组合等可能相关的信息'
-      placeholder: '例如：使用了代理、安装了其他插件、特殊网络环境等'
+      label: "补充信息"
+      description: "代理配置、网络环境、其他插件组合等可能相关的信息"
+      placeholder: "例如：使用了代理、安装了其他插件、特殊网络环境等"
       render: markdown
