@@ -91,11 +91,11 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `proxy` | `string` | - | 网络请求使用的代理，格式: `http://127.0.0.1:7890` |
-| `defaultOutput` | `string` | `pdf` | 默认输出格式，可选值: `pdf`, `zip`, `img` |
-| `defaultSearchLanguage` | `string` | `all` | 默认语言筛选，可选值: `all`, `chinese`, `japanese`, `english` |
-| `enableLinkRecognition`| `boolean`| `true` | 自动识别并处理消息中的 nhentai 链接 |
-| `defaultPassword` | `string` | - | ZIP (AES-256) 和 PDF 文件的默认密码，留空则不加密 |
+| `proxy` | `string` | - | 插件访问 nhentai 时使用的网络代理 |
+| `defaultOutput` | `string` | `pdf` | 下载画廊时的默认文件输出格式，可选值: `pdf`, `zip`, `img` |
+| `defaultSearchLanguage` | `string` | `all` | 搜索画廊时的默认语言，可选值: `all`, `chinese`, `japanese`, `english` |
+| `enableLinkRecognition` | `boolean` | `false` | 自动识别消息中的 nhentai 链接并发送画廊信息 |
+| `defaultPassword` | `string` | - | 为 PDF 和 ZIP 文件设置默认密码 (留空则不加密) |
 
 ---
 
@@ -103,12 +103,14 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `searchResultLimit` | `number` | `10` | 搜索结果每页显示数量 (1-25) |
-| `showTagsInSearch` | `boolean` | `true` | 在搜索结果中显示作品标签 |
-| `showLinkInSearch` | `boolean` | `true` | 在搜索结果中附加 nhentai 链接 |
-| `enableImageMenu` | `boolean` | `true` | 将搜索结果以图片菜单形式展示 |
-| `imageMenuColumns` | `number` | `3` | 图片菜单每行显示的画廊数量 (1-5) |
-| `imageMenuMaxRows` | `number` | `3` | 图片菜单最大行数 (1-5) |
+| `searchMode` | `string` | `menu` | 搜索结果的显示模式，可选值: `text` (文本模式), `menu` (图片菜单模式) |
+| `textMode.searchResultLimit` | `number` | `10` | 文本模式每页显示的最大数量 (1-25) |
+| `textMode.showTags` | `boolean` | `true` | 文本模式显示画廊标签 |
+| `textMode.showLink` | `boolean` | `true` | 文本模式显示 nhentai 链接 |
+| `textMode.showThumbnails` | `boolean` | `true` | 文本模式显示缩略图 |
+| `textMode.useForward` | `boolean` | `true` | 文本模式使用合并转发发送搜索结果 |
+| `menuMode.columns` | `number` | `3` | 图片菜单每行显示的画廊数量 (1-5) |
+| `menuMode.maxRows` | `number` | `3` | 图片菜单最大行数 (1-5) |
 
 ---
 
@@ -116,9 +118,8 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `useForwardForSearch` | `boolean` | `true` | 以合并转发形式发送搜索结果 |
-| `useForwardForDownload` | `boolean` | `true` | 以图片形式发送漫画时使用合并转发 |
-| `imageSendDelay` | `number` | `1` | 图片发送间隔 (秒) |
+| `useForwardForDownload` | `boolean` | `true` | 以图片形式发送画廊时使用合并转发 |
+| `imageSendDelay` | `number` | `1` | 以图片形式发送时每张图片的发送间隔 (秒) |
 | `promptTimeout` | `number` | `60` | 交互式操作的超时时间 (秒) |
 
 ---
@@ -127,8 +128,9 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `downloadPath` | `string` | `./data/temp/nhentai-downloader` | 临时文件的本地存储路径 |
-| `prependIdToFile`| `boolean`| `true` | 在文件名前添加漫画 ID |
+| `downloadPath` | `string` | `./data/temp/nhentai-downloader` | 临时文件和缓存的存储路径（相对于 Koishi 根目录） |
+| `fileSendMethod` | `string` | `buffer` | 发送 PDF 和 ZIP 文件的方式，可选值: `buffer` (内存), `file` (文件路径) |
+| `prependIdToFile` | `boolean` | `true` | 在文件名前添加画廊 ID |
 
 ---
 
@@ -136,10 +138,9 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `pdfSendMethod` | `string` | `buffer` | PDF 发送方式: `buffer` (内存) 或 `file` (文件路径) |
 | `pdfEnableCompression` | `boolean` | `true` | 启用图片压缩以减小 PDF 文件体积 |
-| `pdfCompressionQuality` | `number` | `90` | JPEG 压缩质量 (1-100) |
-| `pdfJpegRecompressionSize` | `number` | `500` | 小于此值 (KB) 的 JPEG 原图将跳过压缩，设为 0 则始终压缩 |
+| `pdfCompressionQuality` | `number` | `90` | JPEG 图片的压缩质量 (1-100) |
+| `pdfJpegRecompressionSize` | `number` | `500` | 小于此体积 (KB) 的 JPEG 原图将不被压缩，设为 0 则全部压缩 |
 
 ---
 
@@ -147,7 +148,7 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `zipCompressionLevel` | `number` | `1` | ZIP 文件压缩等级 (0 为不压缩, 9 为最高) |
+| `zipCompressionLevel` | `number` | `1` | ZIP 文件的压缩级别 (0 不压缩, 9 最高) |
 
 ---
 
@@ -155,7 +156,7 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `antiGzip.enabled` | `boolean` | `true` | 对输出图片进行抗审查处理 |
+| `antiGzip.enabled` | `boolean` | `true` | 对输出图片进行抗风控处理，规避图片审查 |
 
 ---
 
@@ -163,9 +164,9 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `downloadConcurrency` | `number` | `10` | 下载图片时的最大并发请求数 (1-25) |
+| `downloadConcurrency` | `number` | `10` | 下载图片时的最大并发数 (1-25) |
 | `downloadTimeout` | `number` | `30` | 单张图片下载的超时时间 (秒) |
-| `downloadRetries` | `number` | `3` | 下载失败后的重试次数 (0-5) |
+| `downloadRetries` | `number` | `3` | 图片下载失败后的重试次数 (0-5) |
 | `downloadRetryDelay` | `number` | `2` | 每次重试前的等待时间 (秒) |
 | `enableSmartRetry` | `boolean` | `true` | 启用重试自动切换备用图片服务器域名 |
 
@@ -175,12 +176,12 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `cache.enableApiCache`| `boolean`| `true` | 启用 API 响应缓存 (内存) |
+| `cache.enableApiCache` | `boolean` | `true` | 启用 API 响应缓存 (内存) |
 | `cache.apiCacheTTL` | `number` | `10` | API 缓存的有效时间 (分钟) |
-| `cache.enableImageCache`| `boolean`| `true` | 启用图片文件缓存 (磁盘) |
+| `cache.enableImageCache` | `boolean` | `true` | 启用图片文件缓存 (磁盘) |
 | `cache.imageCacheTTL` | `number` | `24` | 图片缓存的有效时间 (小时，0 表示永久保存) |
 | `cache.imageCacheMaxSize` | `number` | `1024` | 图片缓存的最大体积 (MB) |
-| `cache.enablePdfCache`| `boolean`| `false` | 启用 PDF 文件缓存 (磁盘) |
+| `cache.enablePdfCache` | `boolean` | `false` | 启用 PDF 文件缓存 (磁盘) |
 | `cache.pdfCacheTTL` | `number` | `72` | PDF 缓存的有效时间 (小时，0 表示永久保存) |
 | `cache.pdfCacheMaxSize` | `number` | `2048` | PDF 缓存的最大体积 (MB) |
 
