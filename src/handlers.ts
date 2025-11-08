@@ -309,11 +309,11 @@ export async function handleIdSearch(
 
   const { gallery, cover } = result
   const galleryNode = formatGalleryInfo(gallery, undefined, {
-    showTags: config.showTagsInSearch,
-    showLink: config.showLinkInSearch,
+    showTags: config.textMode.showTags,
+    showLink: config.textMode.showLink,
   })
   const messageContent = h('message', {}, galleryNode)
-  if (cover) {
+  if (cover && config.textMode.showThumbnails) {
     messageContent.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
   }
 
@@ -341,7 +341,7 @@ export async function handleKeywordSearchWithMenu(
   menuService: MenuService,
   config: Config,
 ): Promise<void> {
-  const sort = options.sort, lang = options.lang || config.defaultSearchLanguage, limit = config.imageMenuColumns * config.imageMenuMaxRows
+  const sort = options.sort, lang = options.lang || config.defaultSearchLanguage, limit = config.menuMode.columns * config.menuMode.maxRows
   const effectiveQuery = buildSearchQuery(query, lang)
   const initialResult = await apiService.searchGalleries(effectiveQuery, 1, sort)
 
@@ -392,7 +392,7 @@ export async function handleKeywordSearch(
     showLink = true,
   } = handlerOptions
 
-  const limit = config.searchResultLimit > 0 ? config.searchResultLimit : 10, sort = options.sort, lang = options.lang || config.defaultSearchLanguage
+  const limit = config.textMode.searchResultLimit > 0 ? config.textMode.searchResultLimit : 10, sort = options.sort, lang = options.lang || config.defaultSearchLanguage
   const effectiveQuery = buildSearchQuery(query, lang)
   const initialResult = await apiService.searchGalleries(effectiveQuery, 1, sort)
 
@@ -411,12 +411,14 @@ export async function handleKeywordSearch(
     apiService,
     config,
     async (displayedResults, startIndex, totalResults) => {
-      const covers = await nhentaiService.getCoversForGalleries(displayedResults)
+      const covers = config.textMode.showThumbnails
+        ? await nhentaiService.getCoversForGalleries(displayedResults)
+        : new Map()
       const messageNodes = displayedResults.map((gallery, index) => {
         const galleryInfoNode = formatGalleryInfo(gallery, index, { showTags, showLink })
         const cover = covers.get(gallery.id as string)
         const messageNode = h('message', {}, galleryInfoNode)
-        if (cover) {
+        if (cover && config.textMode.showThumbnails) {
           messageNode.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
         }
         return messageNode
@@ -443,6 +445,7 @@ export async function handleDownloadCommand(
   statusMessageId: string,
   nhentaiService: NhentaiService,
   config: Config,
+  baseDir?: string,
 ): Promise<void> {
   let tempPdfPath: string | undefined, shouldCleanupPdf = false
 
@@ -465,7 +468,7 @@ export async function handleDownloadCommand(
       case 'pdf':
         tempPdfPath = result.path
         shouldCleanupPdf = result.isTemporary
-        if (config.pdfSendMethod === 'buffer') {
+        if (config.fileSendMethod === 'buffer') {
           const pdfBuffer = await readFile(tempPdfPath)
           await session.send(h.file(pdfBuffer, 'application/pdf', { title: result.filename }))
         } else {
@@ -474,7 +477,22 @@ export async function handleDownloadCommand(
         break
 
       case 'zip':
-        await session.send(h.file(result.buffer, 'application/zip', { title: result.filename }))
+        if (config.fileSendMethod === 'buffer') {
+          await session.send(h.file(result.buffer, 'application/zip', { title: result.filename }))
+        } else {
+          // file 模式：将 ZIP 保存为临时文件后发送文件路径
+          const { writeFile } = await import('fs/promises')
+          const { join, resolve } = await import('path')
+          // 使用 baseDir 解析绝对路径，确保在 Docker 容器中正确工作
+          const downloadDir = baseDir ? resolve(baseDir, config.downloadPath) : config.downloadPath
+          const tempZipPath = join(downloadDir, `temp_${id}_${Date.now()}.zip`)
+          await writeFile(tempZipPath, result.buffer)
+          await session.send(h.file(pathToFileURL(tempZipPath).href, { title: result.filename }))
+          // 发送后立即删除临时文件
+          await rm(tempZipPath, { force: true }).catch(e => {
+            if (config.debug) logger.warn('删除临时 ZIP 文件失败: %o', e)
+          })
+        }
         break
 
       case 'images':

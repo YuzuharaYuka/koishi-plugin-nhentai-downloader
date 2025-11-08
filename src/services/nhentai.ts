@@ -129,6 +129,11 @@ export class NhentaiService {
     const gallery = await this.apiService.getGallery(id)
     if (!gallery) return null
 
+    // 如果是文本模式且禁用缩略图，则不下载封面
+    if (this.config.searchMode === 'text' && !this.config.textMode.showThumbnails) {
+      return { gallery }
+    }
+
     const cover = await this.coverService.downloadCover(gallery)
     return cover ? { gallery, cover } : { gallery }
   }

@@ -36,8 +36,8 @@ export class NhentaiPlugin {
     await this.processor.initializeCache()
     this.nhentaiService = new NhentaiService(this.apiService, this.config, this.processor)
 
-    // 初始化菜单服务
-    if (this.config.enableImageMenu) {
+    // 初始化菜单服务（仅在图片菜单模式下）
+    if (this.config.searchMode === 'menu') {
       this.menuService = new MenuService(this.config, this.nhentaiService)
       this.debugLog('图片菜单服务已启用')
     }

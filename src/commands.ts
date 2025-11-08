@@ -6,7 +6,7 @@ import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
 import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, SearchOptions } from './handlers'
 import { handleDownloadCommand, DownloadOptions } from './handlers'
-import { galleryUrlRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
+import { galleryIdRegex, galleryUrlRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
 
 export function registerSearchCommands(
   ctx: Context,
@@ -69,19 +69,20 @@ export function registerSearchCommands(
       try {
         if (query && /^\d+$/.test(query)) {
           await handleIdSearch(session, query, nhentaiService, config, {
-            useForward: config.useForwardForSearch,
-            showTags: config.showTagsInSearch,
-            showLink: config.showLinkInSearch,
+            useForward: config.textMode.useForward,
+            showTags: config.textMode.showTags,
+            showLink: config.textMode.showLink,
             promptDownload: true,
           })
         } else {
-          if (config.enableImageMenu && menuService) {
+          // 根据配置的搜索模式选择处理方式
+          if (config.searchMode === 'menu' && menuService) {
             await handleKeywordSearchWithMenu(session, query, searchOptions, apiService, nhentaiService, menuService, config)
           } else {
             await handleKeywordSearch(session, query, searchOptions, apiService, nhentaiService, config, {
-              useForward: config.useForwardForSearch,
-              showTags: config.showTagsInSearch,
-              showLink: config.showLinkInSearch,
+              useForward: config.textMode.useForward,
+              showTags: config.textMode.showTags,
+              showLink: config.textMode.showLink,
             })
           }
         }
@@ -121,14 +122,14 @@ export function registerDownloadCommands(
       if (!idOrUrl) return session.send('请输入要下载的漫画ID或链接。')
 
       const nhentaiService = getNhentaiService()
-      const match = idOrUrl.match(galleryUrlRegex)
+      const match = idOrUrl.match(galleryIdRegex)
       if (!match || !match[1]) return session.send('输入的ID或链接无效，请检查后重试。')
 
       const id = match[1]
       await session.send(h('quote', { id: session.messageId }) + `正在解析画廊 ${id}...`)
 
       try {
-        await handleDownloadCommand(session, id, options as DownloadOptions, '', nhentaiService, config)
+        await handleDownloadCommand(session, id, options as DownloadOptions, '', nhentaiService, config, ctx.baseDir)
       } catch (error) {
         logger.error(`[下载] 任务 ID ${id} 失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
@@ -161,9 +162,9 @@ export function registerRandomCommands(
         }
 
         await handleIdSearch(session, randomId, nhentaiService, config, {
-          useForward: config.useForwardForSearch,
-          showTags: config.showTagsInSearch,
-          showLink: config.showLinkInSearch,
+          useForward: config.textMode.useForward,
+          showTags: config.textMode.showTags,
+          showLink: config.textMode.showLink,
           promptDownload: true,
         })
       } catch (error) {

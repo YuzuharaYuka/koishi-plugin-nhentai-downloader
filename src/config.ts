@@ -7,21 +7,32 @@ export interface Config {
   enableLinkRecognition: boolean;
   defaultPassword?: string;
 
-  useForwardForSearch: boolean;
+  searchMode: 'text' | 'menu';
+
+  // 文本模式设置
+  textMode: {
+    searchResultLimit: number;
+    showTags: boolean;
+    showLink: boolean;
+    showThumbnails: boolean;
+    useForward: boolean;
+  };
+
+  // 图片菜单模式设置
+  menuMode: {
+    columns: number;
+    maxRows: number;
+  };
+
   useForwardForDownload: boolean;
-  showTagsInSearch: boolean;
-  showLinkInSearch: boolean;
-  searchResultLimit: number;
   promptTimeout: number;
   imageSendDelay: number;
 
-  enableImageMenu: boolean;
-  imageMenuColumns: number;
-  imageMenuMaxRows: number;
-
   downloadPath: string;
   prependIdToFile: boolean;
-  pdfSendMethod: 'buffer' | 'file';
+
+  fileSendMethod: 'buffer' | 'file';
+
   pdfEnableCompression: boolean;
   pdfCompressionQuality: number;
   pdfJpegRecompressionSize: number;
@@ -72,7 +83,7 @@ export const Config: Schema<Config> = Schema.intersect([
       .default('all'),
     enableLinkRecognition: Schema.boolean()
       .description('自动识别消息中的 nhentai 链接并发送画廊信息')
-      .default(true),
+      .default(false),
     defaultPassword: Schema.string()
       .role('secret')
       .description('为 PDF 和 ZIP 文件设置默认密码 (留空则不加密)'),
@@ -80,34 +91,44 @@ export const Config: Schema<Config> = Schema.intersect([
 
   // ==================== 搜索设置 ====================
   Schema.object({
-    searchResultLimit: Schema.number()
-      .min(1).max(25).step(1)
-      .description('搜索结果每页显示的最大数量')
-      .default(10),
-    showTagsInSearch: Schema.boolean()
-      .description('搜索结果中显示画廊标签')
-      .default(true),
-    showLinkInSearch: Schema.boolean()
-      .description('搜索结果中包含 nhentai 链接')
-      .default(true),
-    enableImageMenu: Schema.boolean()
-      .description('将搜索结果以图片菜单形式展示')
-      .default(true),
-    imageMenuColumns: Schema.number()
-      .min(1).max(5).step(1)
-      .description('图片菜单每行显示的画廊数量')
-      .default(3),
-    imageMenuMaxRows: Schema.number()
-      .min(1).max(5).step(1)
-      .description('图片菜单最大行数')
-      .default(3),
+    searchMode: Schema.union([
+      Schema.const('text').description('文本模式'),
+      Schema.const('menu').description('图片菜单模式'),
+    ])
+      .description('搜索结果的显示模式')
+      .default('menu'),
+    textMode: Schema.object({
+      searchResultLimit: Schema.number()
+        .min(1).max(25).step(1)
+        .description('每页显示的最大数量')
+        .default(10),
+      showTags: Schema.boolean()
+        .description('显示画廊标签')
+        .default(true),
+      showLink: Schema.boolean()
+        .description('显示 nhentai 链接')
+        .default(true),
+      showThumbnails: Schema.boolean()
+        .description('显示缩略图')
+        .default(true),
+      useForward: Schema.boolean()
+        .description('使用合并转发发送搜索结果')
+        .default(true),
+    }).description('文本模式设置'),
+    menuMode: Schema.object({
+      columns: Schema.number()
+        .min(1).max(5).step(1)
+        .description('每行显示的画廊数量')
+        .default(3),
+      maxRows: Schema.number()
+        .min(1).max(5).step(1)
+        .description('最大行数')
+        .default(3),
+    }).description('图片菜单模式设置'),
   }).description('搜索设置'),
 
   // ==================== 消息设置 ====================
   Schema.object({
-    useForwardForSearch: Schema.boolean()
-      .description('以合并转发形式发送搜索结果')
-      .default(true),
     useForwardForDownload: Schema.boolean()
       .description('以图片形式发送画廊时使用合并转发')
       .default(true),
@@ -124,8 +145,14 @@ export const Config: Schema<Config> = Schema.intersect([
   // ==================== 文件设置 ====================
   Schema.object({
     downloadPath: Schema.string()
-      .description('下载的临时文件在本地的存储路径')
+      .description('临时文件和缓存的存储路径（相对于 Koishi 根目录）')
       .default('./data/temp/nhentai-downloader'),
+    fileSendMethod: Schema.union([
+      Schema.const('buffer').description('内存 (buffer)'),
+      Schema.const('file').description('文件路径 (file)'),
+    ])
+      .description('发送 PDF 和 ZIP 文件的方式')
+      .default('buffer'),
     prependIdToFile: Schema.boolean()
       .description('在文件名前添加画廊 ID')
       .default(true),
@@ -133,12 +160,6 @@ export const Config: Schema<Config> = Schema.intersect([
 
   // ==================== PDF 设置 ====================
   Schema.object({
-    pdfSendMethod: Schema.union([
-      Schema.const('buffer').description('内存 (buffer)'),
-      Schema.const('file').description('文件路径 (file)'),
-    ])
-      .description('发送 PDF 文件的方式')
-      .default('buffer'),
     pdfEnableCompression: Schema.boolean()
       .description('启用图片压缩以减小 PDF 文件体积')
       .default(true),

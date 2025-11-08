@@ -7,10 +7,10 @@ export const THUMB_HOST_FALLBACK = ['t2.nhentai.net', 't3.nhentai.net', 't4.nhen
 
 // 支持的 nhentai 主机列表
 export const NHENTAI_HOSTS = ['nhentai.net', 'nhentai.to'];
-// 从 URL 或纯 ID 字符串提取画廊 ID 的正则表达式
+// 从完整 URL 提取画廊 ID 的正则表达式（只匹配 URL，不匹配纯数字）
+export const galleryUrlRegex = new RegExp(`(?:https?://)?(?:${NHENTAI_HOSTS.map(host => host.replace(/\./g, '\\.')).join('|')})/g/(\\d+)/?`);
+// 从 URL 或纯 ID 字符串提取画廊 ID 的正则表达式（兼容纯数字输入）
 export const galleryIdRegex = new RegExp(`^(?:(?:https?://)?(?:${NHENTAI_HOSTS.map(host => host.replace(/\./g, '\\.')).join('|')})/g/)?(\\d+)/?$`);
-// 向后兼容别名
-export const galleryUrlRegex = galleryIdRegex;
 
 // nhentai 图片类型字符到文件扩展名的映射
 export const imageExtMap: Record<string, 'jpg' | 'png' | 'gif' | 'webp'> = {

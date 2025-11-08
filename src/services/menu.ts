@@ -14,8 +14,8 @@ export class MenuService {
 
   constructor(private config: Config, private nhentaiService: NhentaiService) {
     this.menuGenerator = new MenuGenerator(config, {
-      columns: config.imageMenuColumns,
-      maxRows: config.imageMenuMaxRows,
+      columns: config.menuMode.columns,
+      maxRows: config.menuMode.maxRows,
     })
     // 定期清理过期的菜单
     this.cleanupTimer = setInterval(() => this.cleanupExpiredMenus(), 60000)
@@ -29,10 +29,10 @@ export class MenuService {
     startIndex?: number
   ): Promise<Partial<Gallery>[]> {
     try {
-      const maxItems = this.config.imageMenuColumns * this.config.imageMenuMaxRows
+      const maxItems = this.config.menuMode.columns * this.config.menuMode.maxRows
       const displayGalleries = galleries.slice(0, maxItems)
 
-      // 获取缩略图
+      // 图片菜单模式始终获取缩略图
       const covers = await this.nhentaiService.getCoversForGalleries(displayGalleries)
       const thumbnails = displayGalleries.map(gallery => covers.get(gallery.id as string)?.buffer ?? Buffer.alloc(0))
 
