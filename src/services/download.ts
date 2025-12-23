@@ -58,8 +58,8 @@ export class StreamProcessor {
   }
 
   // 处理下载的图片，应用 antiGzip 并返回处理后的结果
-  private processDownloadedImage(result: DownloadedImage, galleryId: string): DownloadedImage {
-    const processed = this.processor.applyAntiGzip(result.buffer, `${galleryId}-page-${result.index + 1}`)
+  private async processDownloadedImage(result: DownloadedImage, galleryId: string): Promise<DownloadedImage> {
+    const processed = await this.processor.applyAntiGzip(result.buffer, `${galleryId}-page-${result.index + 1}`)
     return {
       ...result,
       buffer: processed.buffer,
@@ -100,7 +100,7 @@ export class StreamProcessor {
           if (onProgress) await onProgress(processedCount, imageUrls.length)
 
           if ('buffer' in result) {
-            const processedImage = this.processDownloadedImage(result, galleryId)
+            const processedImage = await this.processDownloadedImage(result, galleryId)
             downloadedImages.set(result.index, processedImage)
           } else {
             failedIndexes.push(item.index)

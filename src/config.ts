@@ -33,10 +33,14 @@ export interface Config {
 
   fileSendMethod: 'buffer' | 'file';
 
-  pdfEnableCompression: boolean;
-  pdfCompressionQuality: number;
-  pdfJpegRecompressionSize: number;
-  zipCompressionLevel: number;
+  // 图片压缩设置（适用于 PDF 和 ZIP 模式）
+  imageCompression: {
+    enabled: boolean;
+    quality: number;
+    threshold: number;
+    targetFormat: 'jpeg' | 'png';
+  };
+
   antiGzip: { enabled: boolean; };
 
   downloadConcurrency: number;
@@ -158,38 +162,34 @@ export const Config: Schema<Config> = Schema.intersect([
       .default(true),
   }).description('文件设置'),
 
-  // ==================== PDF 设置 ====================
+  // ==================== 图片处理设置 ====================
   Schema.object({
-    pdfEnableCompression: Schema.boolean()
-      .description('启用图片压缩以减小 PDF 文件体积')
-      .default(true),
-    pdfCompressionQuality: Schema.number()
-      .min(1).max(100).step(1).role('slider')
-      .description('JPEG 图片的压缩质量 (1-100)')
-      .default(90),
-    pdfJpegRecompressionSize: Schema.number()
-      .min(0)
-      .description('小于此体积 (KB) 的 JPEG 原图将不被压缩，设为 0 则全部压缩')
-      .default(500),
-  }).description('PDF 设置'),
-
-  // ==================== ZIP 设置 ====================
-  Schema.object({
-    zipCompressionLevel: Schema.number()
-      .min(0).max(9).step(1).role('slider')
-      .description('ZIP 文件的压缩级别 (0 不压缩, 9 最高)')
-      .default(1),
-  }).description('ZIP 设置'),
-
-  // ==================== 图片设置 ====================
-  Schema.object({
+    imageCompression: Schema.object({
+      enabled: Schema.boolean()
+        .description('启用图片压缩以减小文件体积')
+        .default(true),
+      quality: Schema.number()
+        .min(1).max(100).step(1).role('slider')
+        .description('JPEG 压缩质量 (1-100)，质量越低体积越小')
+        .default(85),
+      threshold: Schema.number()
+        .min(0)
+        .description('小于此体积 (KB) 的图片将不被压缩，设为 0 则全部压缩')
+        .default(500),
+      targetFormat: Schema.union([
+        Schema.const('jpeg').description('jpeg'),
+        Schema.const('png').description('png'),
+      ])
+        .description('转换目标格式')
+        .default('jpeg'),
+    }),
     antiGzip: Schema.object({
       enabled: Schema.boolean()
         .description('对输出图片进行抗风控处理，规避图片审查')
         .default(true)
         .experimental(),
     }),
-  }).description('图片设置'),
+  }).description('图片处理'),
 
   // ==================== 下载设置 ====================
   Schema.object({

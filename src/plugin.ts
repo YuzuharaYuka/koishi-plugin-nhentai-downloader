@@ -1,7 +1,7 @@
 import { Context, Session } from 'koishi'
 import { Config } from './config'
 import { logger } from './utils'
-import { Processor, initWasmProcessor } from './processor'
+import { Processor, initCanvasProcessor } from './processor'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
@@ -26,10 +26,10 @@ export class NhentaiPlugin {
     }
   }
 
-  // 初始化插件，加载WASM模块并创建服务实例
+  // 初始化插件，加载 Canvas 处理器并创建服务实例
   public async initialize(): Promise<void> {
-    await initWasmProcessor()
-    this.debugLog('图片处理器加载成功')
+    await initCanvasProcessor()
+    this.debugLog('Canvas 图片处理器加载成功')
 
     await this.apiService.initialize()
     this.processor = new Processor(this.ctx, this.config)

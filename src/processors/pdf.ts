@@ -48,55 +48,38 @@ async function processImageBuffer(
   if (imageCache) {
     const cached = await imageCache.getProcessed(image.galleryId, image.mediaId, image.index)
     if (cached) {
-      debugLog && logger.info(`处理缓存命中: 图片 ${image.index + 1} (gid: ${image.galleryId})`)
-      return { buffer: cached.buffer, format: cached.extension }
+      debugLog && logger.debug(`缓存命中(已处理): 图片 ${image.index + 1}`)
+      return { buffer: cached.buffer, format: cached.format }
     }
-
-    // 缓存未命中，进行处理并保存
-    const { buffer: convertedBuffer, finalFormat: fmt } = await convertImageForMode(
-      processor.wasm,
-      image.buffer,
-      image.extension,
-      'pdf',
-      config,
-    )
-    const compressed = await conditionallyCompressJpeg(
-      processor.wasm,
-      convertedBuffer,
-      fmt,
-      config.pdfJpegRecompressionSize,
-      config.pdfCompressionQuality,
-      config.pdfEnableCompression,
-      debugLog,
-    )
-
-    await imageCache.setProcessed(image.galleryId, image.mediaId, image.index, compressed, fmt).catch(
-      (err) => {
-        debugLog && logger.warn(`保存处理缓存失败: ${err.message}`)
-      },
-    )
-    return { buffer: compressed, format: fmt }
   }
 
-  // 无缓存，直接处理
-  const { buffer: convertedBuffer, finalFormat: fmt } = await convertImageForMode(
-    processor.wasm,
+  // 执行图片处理
+  const { buffer: convertedBuf, finalFormat } = await convertImageForMode(
+    processor.processor,
     image.buffer,
     image.extension,
     'pdf',
     config,
   )
-  const compressed = await conditionallyCompressJpeg(
-    processor.wasm,
-    convertedBuffer,
-    fmt,
-    config.pdfJpegRecompressionSize,
-    config.pdfCompressionQuality,
-    config.pdfEnableCompression,
+
+  const finalBuffer = await conditionallyCompressJpeg(
+    processor.processor,
+    convertedBuf,
+    finalFormat,
+    config.imageCompression.threshold,
+    config.imageCompression.quality,
+    config.imageCompression.enabled,
     debugLog,
   )
-  return { buffer: compressed, format: fmt }
+
+  // 存储处理结果到缓存
+  if (imageCache && image.galleryId && image.mediaId !== undefined) {
+    await imageCache.setProcessed(image.galleryId, image.mediaId, image.index, finalBuffer, finalFormat)
+  }
+
+  return { buffer: finalBuffer, format: finalFormat }
 }
+
 
 export async function createPdf(
   imageStream: AsyncIterable<DownloadedImage>,

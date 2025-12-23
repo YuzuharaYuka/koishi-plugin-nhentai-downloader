@@ -4,8 +4,8 @@ import { GotScraping } from 'got-scraping'
 import { Config } from './config'
 import { ImageCache, PdfCache } from './services/cache'
 
-import { WasmImageProcessor, DownloadedImage, ProcessedImage } from './processors/types'
-import { initWasmProcessor, ensureWasmLoaded } from './processors/wasm'
+import { CanvasImageProcessor, DownloadedImage, ProcessedImage } from './processors/types'
+import { initCanvasProcessor, ensureCanvasLoaded } from './processors/canvas-processor'
 import {
   applyAntiGzip as applyAntiGzipHelper,
   downloadImage as downloadImageHelper,
@@ -14,20 +14,19 @@ import { createZip as createZipHelper } from './processors/zip'
 import { createPdf as createPdfHelper } from './processors/pdf'
 
 // 保持向后兼容的类型和函数重导出
-export { WasmImageProcessor, DownloadedImage, ProcessedImage }
-export { initWasmProcessor }
+export { CanvasImageProcessor, DownloadedImage, ProcessedImage }
+export { initCanvasProcessor }
 
 // 图片处理器主类，作为所有图片操作的统一入口
 export class Processor {
-  public wasm: WasmImageProcessor
+  public processor: CanvasImageProcessor
   private imageCache: ImageCache | null = null
   private pdfCache: PdfCache | null = null
   private successfulHosts: Map<string, string> = new Map()
 
   constructor(private ctx: Context, private config: Config) {
-    // WASM 必须在 ctx.on('ready') 中通过 initWasmProcessor() 初始化完成后才能构造此类
-    // 这里直接获取已加载的实例，如果未加载则抛出异常让上层 try-catch 捕获
-    this.wasm = ensureWasmLoaded()
+    // Canvas 处理器可以即时创建，无需等待异步初始化
+    this.processor = ensureCanvasLoaded()
 
     if (this.config.cache.enableImageCache) {
       this.imageCache = new ImageCache(this.config, this.ctx.app.baseDir)
@@ -63,8 +62,8 @@ export class Processor {
     return this.imageCache
   }
 
-  applyAntiGzip(buffer: Buffer, identifier?: string): { buffer: Buffer; format: string } {
-    return applyAntiGzipHelper(this.wasm, buffer, this.config, identifier)
+  async applyAntiGzip(buffer: Buffer, identifier?: string): Promise<{ buffer: Buffer; format: string }> {
+    return applyAntiGzipHelper(this.processor, buffer, this.config, identifier)
   }
 
   async downloadImage(
@@ -91,7 +90,7 @@ export class Processor {
   }
 
   async createZip(imageStream: AsyncIterable<DownloadedImage>, password?: string, folderName?: string): Promise<Buffer> {
-    return createZipHelper(imageStream, password, this.config.zipCompressionLevel, folderName)
+    return createZipHelper(imageStream, password, this.config.imageCompression.enabled, folderName)
   }
 
   async createPdf(

@@ -28,7 +28,7 @@ async function ensureArchiverInitialized() {
 export async function createZip(
   imageStream: AsyncIterable<DownloadedImage>,
   password: string | undefined,
-  zipCompressionLevel: number,
+  imageCompressionEnabled: boolean,
   folderName?: string,
 ): Promise<Buffer> {
   // 延迟加载 archiver（仅在需要时加载）
@@ -36,9 +36,13 @@ export async function createZip(
 
   const isEncrypted = !!password
   const format = isEncrypted ? 'zip-encrypted' : 'zip'
+
+  // 智能压缩策略：图片已压缩则用存储模式，否则用标准压缩
+  const compressionLevel = imageCompressionEnabled ? 0 : 6
+
   // 配置压缩选项和加密参数
   const archiveOptions: any = {
-    zlib: { level: zipCompressionLevel },
+    zlib: { level: compressionLevel },
   }
   if (isEncrypted) {
     archiveOptions.encryptionMethod = 'aes256'

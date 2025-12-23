@@ -38,9 +38,9 @@ export class CoverService {
     return `https://${THUMB_HOST_PRIMARY}/galleries/${gallery.media_id}/thumb.${imageExtMap[thumb?.t || ''] || 'jpg'}`
   }
 
-  private processDownloadResult(result: any, galleryId: string): { buffer: Buffer; extension: string } | null {
+  private async processDownloadResult(result: any, galleryId: string): Promise<{ buffer: Buffer; extension: string } | null> {
     if ('buffer' in result) {
-      const processed = this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`)
+      const processed = await this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`)
       const extension = processed.format === 'webp' ? 'webp' : result.extension
       return { buffer: processed.buffer, extension }
     }
@@ -97,7 +97,7 @@ export class CoverService {
             1,
           )
 
-          const processed = this.processDownloadResult(result, gallery.id as string)
+          const processed = await this.processDownloadResult(result, gallery.id as string)
           if (processed) {
             covers.set(gallery.id as string, processed)
           }

@@ -1,6 +1,6 @@
 import { GotScraping } from 'got-scraping'
 import * as path from 'path'
-import { WasmImageProcessor, DownloadedImage, ProcessedImage } from './types'
+import { CanvasImageProcessor, DownloadedImage, ProcessedImage } from './types'
 import { Config } from '../config'
 import { logger, sleep } from '../utils'
 import { IMAGE_HOST_FALLBACK, THUMB_HOST_FALLBACK } from '../constants'
@@ -82,26 +82,40 @@ function buildRequestOptions(gid: string, config: Config, sessionToken?: object)
   return options
 }
 
-// 根据输出模式转换图片格式
+// 根据输出模式和配置转换图片格式
 export async function convertImageForMode(
-  wasm: WasmImageProcessor,
+  processor: CanvasImageProcessor,
   buffer: Buffer,
   format: string,
   mode: 'pdf' | 'zip' | 'image',
   config: Config,
 ): Promise<{ buffer: Buffer; finalFormat: string }> {
-  if (mode === 'zip' || mode === 'image') {
+  // 图片模式：直接返回原始格式
+  if (mode === 'image') {
     return { buffer, finalFormat: format }
   }
 
-  if (mode === 'pdf' && format === 'webp') {
+  // PDF 和 ZIP 模式：根据配置转换格式以便压缩
+  if ((mode === 'pdf' || mode === 'zip') && config.imageCompression.enabled) {
+    // 已经是目标格式，无需转换
+    const targetFormat = config.imageCompression.targetFormat
+    if (format === targetFormat || (targetFormat === 'jpeg' && format === 'jpg')) {
+      return { buffer, finalFormat: format }
+    }
+
+    // 转换为目标格式
     try {
-      const quality = config.pdfCompressionQuality || 85
-      const wasmResult = wasm.webp_to_jpeg(new Uint8Array(buffer), quality)
-      return { buffer: Buffer.from(wasmResult), finalFormat: 'jpeg' }
+      const quality = config.imageCompression.quality
+      if (targetFormat === 'jpeg') {
+        const result = await processor.convertToJpeg(new Uint8Array(buffer), quality)
+        return { buffer: Buffer.from(result), finalFormat: 'jpeg' }
+      } else {
+        const result = await processor.convertToPng(new Uint8Array(buffer))
+        return { buffer: Buffer.from(result), finalFormat: 'png' }
+      }
     } catch (error) {
-      logger.error(`WebP to JPEG 转换失败: ${error.message}`)
-      throw new Error(`无法转换 WebP 图片: ${error.message}`)
+      logger.error(`格式转换失败 (${format} → ${targetFormat}): ${error.message}`)
+      throw new Error(`无法转换图片格式: ${error.message}`)
     }
   }
 
@@ -110,7 +124,7 @@ export async function convertImageForMode(
 
 // 根据配置对 JPEG 图片进行条件压缩
 export async function conditionallyCompressJpeg(
-  wasm: WasmImageProcessor,
+  processor: CanvasImageProcessor,
   buffer: Buffer,
   format: string,
   threshold: number,
@@ -124,18 +138,19 @@ export async function conditionallyCompressJpeg(
 
   const sizeKB = buffer.length / 1024
   if (threshold > 0 && sizeKB <= threshold) {
-    debug && logger.debug(`JPEG ${(sizeKB).toFixed(1)}KB ≤ ${threshold}KB，跳过压缩`)
+    debug && logger.debug(`JPEG ${sizeKB.toFixed(1)}KB ≤ ${threshold}KB，跳过压缩`)
     return buffer
   }
 
   try {
-    const wasmResult = wasm.compress_jpeg(new Uint8Array(buffer), Math.min(Math.max(quality, 1), 100), 0)
+    const finalQuality = Math.min(Math.max(quality, 1), 100)
+    const result = await processor.compressJpeg(new Uint8Array(buffer), finalQuality, 0)
     if (debug) {
-      const compressedSize = wasmResult.length / 1024
+      const compressedSize = result.length / 1024
       const savedSize = ((1 - compressedSize / sizeKB) * 100).toFixed(1)
       logger.debug(`JPEG 压缩: ${sizeKB.toFixed(1)}KB → ${compressedSize.toFixed(1)}KB (节省 ${savedSize}%)`)
     }
-    return Buffer.from(wasmResult)
+    return Buffer.from(result)
   } catch (error) {
     logger.error(`JPEG 压缩失败，使用原图: ${error.message}`)
     return buffer
@@ -143,20 +158,21 @@ export async function conditionallyCompressJpeg(
 }
 
 // 对单张图片应用反和谐处理，返回处理后的 buffer 和新格式
-export function applyAntiGzip(
-  wasm: WasmImageProcessor,
+export async function applyAntiGzip(
+  processor: CanvasImageProcessor,
   buffer: Buffer,
   config: Config,
   identifier?: string,
-): { buffer: Buffer; format: string } {
+): Promise<{ buffer: Buffer; format: string }> {
   if (!config.antiGzip.enabled) return { buffer, format: 'original' }
 
   const logPrefix = `[AntiGzip]${identifier ? ` (${identifier})` : ''}`
   const debugLog = config.debug
   try {
-    const result = wasm.apply_anti_censorship_jpeg(new Uint8Array(buffer))
-    debugLog && logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes (WebP)`)
-    return { buffer: Buffer.from(result), format: 'webp' }
+    // 使用 JPEG 格式以获得更好的兼容性和压缩率
+    const result = await processor.applyAntiCensorship(new Uint8Array(buffer), 'jpeg', 90)
+    debugLog && logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes (JPEG)`)
+    return { buffer: Buffer.from(result), format: 'jpeg' }
   } catch (error) {
     logger.warn(`${logPrefix} 处理失败，返回原图: ${error.message}`)
     return { buffer, format: 'original' }
@@ -164,16 +180,16 @@ export function applyAntiGzip(
 }
 
 // 批量对图片应用反和谐处理，返回处理后的 buffer 和格式信息数组
-export function batchApplyAntiGzip(
-  wasm: WasmImageProcessor,
+export async function batchApplyAntiGzip(
+  processor: CanvasImageProcessor,
   images: Array<{ buffer: Buffer; identifier?: string }>,
   config: Config,
-): Array<{ buffer: Buffer; format: string }> {
+): Promise<Array<{ buffer: Buffer; format: string }>> {
   if (!config.antiGzip.enabled || images.length === 0) {
     return images.map((img) => ({ buffer: img.buffer, format: 'original' }))
   }
 
-  return images.map((img) => applyAntiGzip(wasm, img.buffer, config, img.identifier))
+  return Promise.all(images.map((img) => applyAntiGzip(processor, img.buffer, config, img.identifier)))
 }
 
 // 下载单张图片，支持缓存、重试和智能域名切换
