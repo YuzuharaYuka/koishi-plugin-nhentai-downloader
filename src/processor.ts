@@ -62,8 +62,8 @@ export class Processor {
     return this.imageCache
   }
 
-  async applyAntiGzip(buffer: Buffer, identifier?: string): Promise<{ buffer: Buffer; format: string }> {
-    return applyAntiGzipHelper(this.processor, buffer, this.config, identifier)
+  async applyAntiGzip(buffer: Buffer, identifier?: string, preserveFormat?: boolean): Promise<{ buffer: Buffer; format: string }> {
+    return applyAntiGzipHelper(this.processor, buffer, this.config, identifier, preserveFormat)
   }
 
   async downloadImage(

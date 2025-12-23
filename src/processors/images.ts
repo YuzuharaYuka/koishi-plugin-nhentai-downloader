@@ -163,16 +163,40 @@ export async function applyAntiGzip(
   buffer: Buffer,
   config: Config,
   identifier?: string,
+  preserveFormat?: boolean,
 ): Promise<{ buffer: Buffer; format: string }> {
   if (!config.antiGzip.enabled) return { buffer, format: 'original' }
 
   const logPrefix = `[AntiGzip]${identifier ? ` (${identifier})` : ''}`
   const debugLog = config.debug
+
+  // 数据验证
+  if (!buffer || buffer.length === 0) {
+    logger.warn(`${logPrefix} Buffer 为空,跳过处理`)
+    return { buffer, format: 'original' }
+  }
+
   try {
-    // 使用 JPEG 格式以获得更好的兼容性和压缩率
-    const result = await processor.applyAntiCensorship(new Uint8Array(buffer), 'jpeg', 90)
-    debugLog && logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes (JPEG)`)
-    return { buffer: Buffer.from(result), format: 'jpeg' }
+    // 检测原始格式
+    let detectedFormat = 'jpeg'
+    if (preserveFormat) {
+      if (buffer.length > 12 && buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WEBP') {
+        detectedFormat = 'webp'
+      } else if (buffer.length > 4 && buffer[0] === 0x89 && buffer.slice(1, 4).toString() === 'PNG') {
+        detectedFormat = 'png'
+      }
+    }
+
+    // 添加超时保护
+    const processPromise = processor.applyAntiCensorshipJpeg(new Uint8Array(buffer))
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('AntiGzip 处理超时')), 10000)
+    })
+
+    const result = await Promise.race([processPromise, timeoutPromise])
+    const formatLabel = preserveFormat ? detectedFormat.toUpperCase() : 'JPEG'
+    debugLog && logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes (${formatLabel})`)
+    return { buffer: Buffer.from(result), format: detectedFormat }
   } catch (error) {
     logger.warn(`${logPrefix} 处理失败，返回原图: ${error.message}`)
     return { buffer, format: 'original' }
@@ -184,12 +208,13 @@ export async function batchApplyAntiGzip(
   processor: CanvasImageProcessor,
   images: Array<{ buffer: Buffer; identifier?: string }>,
   config: Config,
+  preserveFormat?: boolean,
 ): Promise<Array<{ buffer: Buffer; format: string }>> {
   if (!config.antiGzip.enabled || images.length === 0) {
     return images.map((img) => ({ buffer: img.buffer, format: 'original' }))
   }
 
-  return Promise.all(images.map((img) => applyAntiGzip(processor, img.buffer, config, img.identifier)))
+  return Promise.all(images.map((img) => applyAntiGzip(processor, img.buffer, config, img.identifier, preserveFormat)))
 }
 
 // 下载单张图片，支持缓存、重试和智能域名切换

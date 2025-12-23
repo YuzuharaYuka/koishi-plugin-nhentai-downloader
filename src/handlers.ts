@@ -114,7 +114,8 @@ export function buildSearchQuery(
   // 已有语言过滤则直接返回
   if (baseQuery.includes('language:') || baseQuery.includes('汉化')) return baseQuery
   // 未指定或指定 'all' 则不添加语言过滤
-  return (lang && lang !== 'all') ? `${baseQuery} language:${lang}`.trim() : baseQuery
+  const result = (lang && lang !== 'all') ? `${baseQuery} language:${lang}`.trim() : baseQuery
+  return result || 'pages:>0'
 }
 
 // 分页管理器：处理搜索结果的分页逻辑
@@ -292,6 +293,48 @@ async function handleUserInput(
   return 'break'
 }
 
+export async function handleIdSearchWithMenu(
+  session: Session,
+  id: string,
+  nhentaiService: NhentaiService,
+  menuService: MenuService,
+  config: Config,
+): Promise<void> {
+  const result = await nhentaiService.getGalleryWithCover(id)
+  if (!result) {
+    await session.send(`获取画廊 ${id} 信息失败，请检查ID是否正确。`)
+    return
+  }
+
+  const { gallery, cover } = result
+  const coverBuffer = cover ? cover.buffer : Buffer.alloc(0)
+
+  try {
+    await menuService.sendDetailMenu(session, gallery, coverBuffer)
+
+    const reply = await session.prompt(config.promptTimeout * 1000)
+    if (!reply) {
+      await session.send('操作超时，已自动取消。')
+    } else if (reply.toLowerCase() === 'y') {
+      await session.execute(`nh.download ${id}`)
+    } else if (reply.toLowerCase() === 'n') {
+      await session.send('操作已取消。')
+    } else {
+       await session.send('无效输入，操作已取消。')
+    }
+
+  } catch (error) {
+    logger.error(`详细菜单处理失败: ${error.message}`)
+    await session.send('菜单生成失败，将使用传统模式显示结果。')
+    await handleIdSearch(session, id, nhentaiService, config, {
+      useForward: config.textMode.useForward,
+      showTags: config.textMode.showTags,
+      showLink: config.textMode.showLink,
+      promptDownload: true
+    })
+  }
+}
+
 export async function handleIdSearch(
   session: Session,
   id: string,
@@ -461,7 +504,7 @@ export async function handleDownloadCommand(
 
     let successMessage = `任务完成: ${result.filename.split('.').slice(0, -1).join('.')}`
     if (['zip', 'pdf'].includes(result.type) && password) {
-      successMessage += `，密码为: ${password}`
+      successMessage += `\n密码: ${password}`
     }
 
     switch (result.type) {

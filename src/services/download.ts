@@ -278,10 +278,20 @@ export class DownloadManager {
   }
 
   private generateFilename(gallery: any, id: string): string {
-    let filename = (gallery.title?.pretty || gallery.title?.english || 'untitled').replace(
-      /[\\/:\*\?"<>\|]/g,
-      '_',
-    )
+    // 根据配置的标题类型获取标题，如果不存在则按优先级回退：日文 > 英文 > pretty
+    let title: string
+    const titleType = this.config.titleType || 'japanese'
+
+    if (titleType === 'japanese') {
+      title = gallery.title?.japanese || gallery.title?.english || gallery.title?.pretty || 'untitled'
+    } else if (titleType === 'english') {
+      title = gallery.title?.english || gallery.title?.japanese || gallery.title?.pretty || 'untitled'
+    } else { // pretty
+      title = gallery.title?.pretty || gallery.title?.japanese || gallery.title?.english || 'untitled'
+    }
+
+    // 清理文件名中的非法字符
+    let filename = title.replace(/[\\/:\*\?"<>\|]/g, '_')
 
     if (this.config.prependIdToFile) {
       filename = `[${id}] ${filename}`
@@ -369,8 +379,7 @@ export class DownloadManager {
       }
 
       if (pdfCache) {
-        await pdfCache.set(galleryId, pdfPath, `${filename}.pdf`, password)
-        const cachedPath = await pdfCache.get(galleryId, password)
+        const cachedPath = await pdfCache.set(galleryId, pdfPath, `${filename}.pdf`, password)
         if (cachedPath) {
           try {
             const { unlink } = await import('fs/promises')

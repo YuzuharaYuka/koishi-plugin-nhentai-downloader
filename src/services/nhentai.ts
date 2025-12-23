@@ -39,12 +39,23 @@ export class CoverService {
   }
 
   private async processDownloadResult(result: any, galleryId: string): Promise<{ buffer: Buffer; extension: string } | null> {
-    if ('buffer' in result) {
-      const processed = await this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`)
-      const extension = processed.format === 'webp' ? 'webp' : result.extension
-      return { buffer: processed.buffer, extension }
+    try {
+      if ('buffer' in result && result.buffer && Buffer.isBuffer(result.buffer)) {
+        // 菜单缩略图保持原格式，避免不必要的转换
+        const processed = await this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`, true)
+        const extension = processed.format === 'original' ? result.extension : (processed.format === 'webp' ? 'webp' : (processed.format === 'png' ? 'png' : 'jpg'))
+        return { buffer: processed.buffer, extension }
+      }
+      logger.warn(`画廊 ${galleryId} 下载结果无效`)
+      return null
+    } catch (error) {
+      logger.error(`处理画廊 ${galleryId} 下载结果失败: ${error.message}`)
+      // 如果 AntiGzip 失败,尝试返回原始 buffer
+      if ('buffer' in result && result.buffer && Buffer.isBuffer(result.buffer)) {
+        return { buffer: result.buffer, extension: result.extension || 'jpg' }
+      }
+      return null
     }
-    return null
   }
 
   async downloadCover(
@@ -78,36 +89,53 @@ export class CoverService {
     if (galleries.length === 0) return covers
 
     const galleryQueue = [...galleries]
-    const concurrency = Math.min(this.config.downloadConcurrency, galleries.length)
+    // 限制并发数以避免内存溢出,最大不超过 10
+    const concurrency = Math.min(Math.min(this.config.downloadConcurrency, 10), galleries.length)
 
     const workerTasks = Array.from({ length: concurrency }, async () => {
-      let gallery: Partial<Gallery> | undefined
+      try {
+        let gallery: Partial<Gallery> | undefined
 
-      while ((gallery = galleryQueue.shift())) {
-        if (!gallery?.id || !gallery.media_id || !gallery.images?.thumbnail) continue
+        while ((gallery = galleryQueue.shift())) {
+          if (!gallery?.id || !gallery.media_id || !gallery.images?.thumbnail) continue
 
-        try {
-          const thumbUrl = this.buildThumbUrl(gallery)
-          const result = await this.processor.downloadImage(
-            this.apiService.imageGot,
-            thumbUrl,
-            0,
-            gallery.id as string,
-            gallery.media_id as string,
-            1,
-          )
+          try {
+            const thumbUrl = this.buildThumbUrl(gallery)
 
-          const processed = await this.processDownloadResult(result, gallery.id as string)
-          if (processed) {
-            covers.set(gallery.id as string, processed)
+            // 添加超时保护,防止长时间阻塞
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error('下载超时')), 30000)
+            })
+
+            const downloadPromise = this.processor.downloadImage(
+              this.apiService.imageGot,
+              thumbUrl,
+              0,
+              gallery.id as string,
+              gallery.media_id as string,
+              1,
+            )
+
+            const result = await Promise.race([downloadPromise, timeoutPromise])
+            const processed = await this.processDownloadResult(result, gallery.id as string)
+            if (processed) {
+              covers.set(gallery.id as string, processed)
+            }
+          } catch (itemError) {
+            logger.error(`处理画廊 ${gallery?.id} 缩略图时出错: ${itemError.message}`)
+            // 继续处理下一个,不中断整个队列
           }
-        } catch (itemError) {
-          logger.error(`处理画廊 ${gallery?.id} 缩略图时出错: ${itemError.message}`)
         }
+      } catch (workerError) {
+        logger.error(`Worker 线程异常: ${workerError.message}`)
       }
     })
 
-    await Promise.all(workerTasks)
+    try {
+      await Promise.all(workerTasks)
+    } catch (error) {
+      logger.error(`批量下载封面失败: ${error.message}`)
+    }
     return covers
   }
 }

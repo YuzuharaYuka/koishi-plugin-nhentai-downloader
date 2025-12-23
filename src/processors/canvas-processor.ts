@@ -2,7 +2,7 @@
  * 基于 @napi-rs/canvas 的高性能图片处理模块
  * 替代原 WASM 实现，提供图片格式转换、质量压缩和反和谐处理
  */
-import { createCanvas, loadImage, Image, SKRSContext2D } from '@napi-rs/canvas'
+import { createCanvas, loadImage, Image, SKRSContext2D, GlobalFonts } from '@napi-rs/canvas'
 import { logger } from '../utils'
 
 // 数字字形常量 (5x7 像素位图，用于水印)
@@ -192,6 +192,69 @@ class CanvasImageProcessor {
       return { width: img.width, height: img.height }
     } catch (error) {
       throw new Error(`Failed to get dimensions: ${error.message}`)
+    }
+  }
+
+  /**
+   * 应用轻量级抗审查处理并转换为 JPEG 格式
+   * 策略：在随机角落添加随机数字水印 (15% 不透明度)
+   *
+   * @param buffer 原始图片 Buffer
+   * @param noiseIntensity 噪点强度 (保留参数，当前未使用)
+   * @returns 处理后的 JPEG Buffer
+   */
+  async applyAntiCensorshipJpeg(buffer: Uint8Array, noiseIntensity?: number): Promise<Uint8Array> {
+    try {
+      const img = new Image()
+      img.src = Buffer.from(buffer)
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve()
+        img.onerror = reject
+      })
+
+      const { width, height } = img
+      const canvas = createCanvas(width, height)
+      const ctx = canvas.getContext('2d')
+
+      // 绘制原图
+      ctx.drawImage(img, 0, 0)
+
+      // 计算水印参数
+      const watermarkDigit = Math.floor(Math.random() * 10)
+      const fontSize = Math.max(8, Math.floor(width / 150))
+      const margin = Math.floor(fontSize / 2)
+      const position = Math.floor(Math.random() * 4) // 0=TL, 1=TR, 2=BR, 3=BL
+
+      const textW = GLYPH_WIDTH * fontSize
+      const textH = GLYPH_HEIGHT * fontSize
+
+      // 计算水印位置
+      let x: number, y: number
+      switch (position) {
+        case 0: // Top-Left
+          x = margin
+          y = margin
+          break
+        case 1: // Top-Right
+          x = width - margin - textW
+          y = margin
+          break
+        case 2: // Bottom-Right
+          x = width - margin - textW
+          y = height - margin - textH
+          break
+        default: // Bottom-Left
+          x = margin
+          y = height - margin - textH
+      }
+
+      // 绘制水印数字
+      this.drawDigit(ctx, watermarkDigit, x, y, fontSize, WATERMARK_OPACITY)
+
+      // 输出为 JPEG 格式
+      return canvas.encode('jpeg', 90)
+    } catch (error) {
+      throw new Error(`Failed to apply anti-censorship JPEG: ${error.message}`)
     }
   }
 

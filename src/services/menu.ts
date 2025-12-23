@@ -59,6 +59,21 @@ export class MenuService {
     }
   }
 
+  // 生成并发送单个画廊的详细信息菜单
+  async sendDetailMenu(session: Session, gallery: Gallery, coverBuffer: Buffer): Promise<void> {
+    try {
+      // 生成菜单图片
+      const menuImage = await this.menuGenerator.generateDetailMenu(gallery, coverBuffer)
+
+      // 发送菜单图片
+      await session.send(h.image(menuImage, 'image/png'))
+
+    } catch (error) {
+      logger.error(`生成详细菜单失败: ${error.message}`)
+      throw error
+    }
+  }
+
   // 处理用户的菜单选择
   async handleMenuSelection(session: Session, selection: string): Promise<Partial<Gallery> | null> {
     const menuKey = this.getMenuKey(session)

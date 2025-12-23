@@ -4,7 +4,7 @@ import { logger } from './utils'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
-import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, SearchOptions } from './handlers'
+import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, handleIdSearchWithMenu, SearchOptions } from './handlers'
 import { handleDownloadCommand, DownloadOptions } from './handlers'
 import { galleryIdRegex, galleryUrlRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
 
@@ -68,12 +68,16 @@ export function registerSearchCommands(
       await session.send(h('quote', { id: session.messageId }) + searchMessage)
       try {
         if (query && /^\d+$/.test(query)) {
-          await handleIdSearch(session, query, nhentaiService, config, {
-            useForward: config.textMode.useForward,
-            showTags: config.textMode.showTags,
-            showLink: config.textMode.showLink,
-            promptDownload: true,
-          })
+          if (config.searchMode === 'menu' && menuService) {
+            await handleIdSearchWithMenu(session, query, nhentaiService, menuService, config)
+          } else {
+            await handleIdSearch(session, query, nhentaiService, config, {
+              useForward: config.textMode.useForward,
+              showTags: config.textMode.showTags,
+              showLink: config.textMode.showLink,
+              promptDownload: true,
+            })
+          }
         } else {
           // 根据配置的搜索模式选择处理方式
           if (config.searchMode === 'menu' && menuService) {
@@ -141,6 +145,7 @@ export function registerRandomCommands(
   ctx: Context,
   config: Config,
   getNhentaiService: () => NhentaiService,
+  getMenuService: () => MenuService | null,
   ensureInitialized: (session: Session) => boolean,
   nhCmd: Command,
 ): void {
@@ -153,6 +158,7 @@ export function registerRandomCommands(
       if (!ensureInitialized(session)) return
 
       const nhentaiService = getNhentaiService()
+      const menuService = getMenuService()
       await session.send(h('quote', { id: session.messageId }) + '正在进行一次天降好运...')
 
       try {
@@ -161,12 +167,16 @@ export function registerRandomCommands(
           throw new Error('获取随机画廊ID失败。')
         }
 
-        await handleIdSearch(session, randomId, nhentaiService, config, {
-          useForward: config.textMode.useForward,
-          showTags: config.textMode.showTags,
-          showLink: config.textMode.showLink,
-          promptDownload: true,
-        })
+        if (config.searchMode === 'menu' && menuService) {
+          await handleIdSearchWithMenu(session, randomId, nhentaiService, menuService, config)
+        } else {
+          await handleIdSearch(session, randomId, nhentaiService, config, {
+            useForward: config.textMode.useForward,
+            showTags: config.textMode.showTags,
+            showLink: config.textMode.showLink,
+            promptDownload: true,
+          })
+        }
       } catch (error) {
         logger.error(`[随机] 命令执行失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
@@ -193,5 +203,5 @@ export function registerAllCommands(
 ): void {
   const nhCmd = registerSearchCommands(ctx, config, getApiService, getNhentaiService, getMenuService, ensureInitialized)
   registerDownloadCommands(ctx, config, getNhentaiService, ensureInitialized, nhCmd)
-  registerRandomCommands(ctx, config, getNhentaiService, ensureInitialized, nhCmd)
+  registerRandomCommands(ctx, config, getNhentaiService, getMenuService, ensureInitialized, nhCmd)
 }

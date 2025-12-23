@@ -30,6 +30,7 @@ export interface Config {
 
   downloadPath: string;
   prependIdToFile: boolean;
+  titleType: 'japanese' | 'english' | 'pretty';
 
   fileSendMethod: 'buffer' | 'file';
 
@@ -160,6 +161,13 @@ export const Config: Schema<Config> = Schema.intersect([
     prependIdToFile: Schema.boolean()
       .description('在文件名前添加画廊 ID')
       .default(true),
+    titleType: Schema.union([
+      Schema.const('japanese').description('日文标题'),
+      Schema.const('english').description('英文标题'),
+      Schema.const('pretty').description('简化标题'),
+    ])
+      .description('文件名优先使用的标题类型')
+      .default('japanese'),
   }).description('文件设置'),
 
   // ==================== 图片处理设置 ====================

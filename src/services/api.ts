@@ -248,6 +248,14 @@ export class ApiService {
 
       const data = await this.gotManager.apiGot!.get(url).json<SearchResult>()
 
+      if (!data || !data.result) {
+        logger.warn(`搜索 "${query}" 返回了意外的数据结构或无结果`)
+        if (this.config.debug) {
+          logger.info(`[API响应] 原始数据:\n${JSON.stringify(data, null, 2)}`)
+        }
+        return { result: [], num_pages: 0, per_page: 25 }
+      }
+
       logger.info(`搜索完成，找到 ${data.result.length} 个结果`)
 
       if (this.config.returnApiJson) {

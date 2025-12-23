@@ -9,6 +9,8 @@ export class InMemoryCache {
   private store = new Map<string, { value: any; timer?: NodeJS.Timeout; createdAt: number }>()
   private maxSize: number
   private defaultTTL: number
+  private hitCount: number = 0
+  private missCount: number = 0
 
   constructor(config: CacheConfig = {}) {
     this.maxSize = config.maxSize || 1000
@@ -16,7 +18,13 @@ export class InMemoryCache {
   }
 
   async get<T>(key: string): Promise<T | undefined> {
-    return this.store.get(key)?.value
+    const entry = this.store.get(key)
+    if (entry) {
+      this.hitCount++
+      return entry.value
+    }
+    this.missCount++
+    return undefined
   }
 
   async set(key: string, value: any, maxAge?: number): Promise<void> {
@@ -60,9 +68,14 @@ export class InMemoryCache {
   }
 
   getStats() {
+    const totalRequests = this.hitCount + this.missCount
+    const hitRate = totalRequests > 0 ? (this.hitCount / totalRequests * 100).toFixed(2) : '0.00'
     return {
       size: this.store.size,
       maxSize: this.maxSize,
+      hitCount: this.hitCount,
+      missCount: this.missCount,
+      hitRate: `${hitRate}%`,
     }
   }
 
@@ -99,6 +112,14 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
   protected cacheTTL: number
   protected indexDirty: boolean = false
   protected saveTimer: NodeJS.Timeout | null = null
+  // 统计信息
+  protected hitCount: number = 0
+  protected missCount: number = 0
+  protected cleanupCount: number = 0
+  protected totalCleanedEntries: number = 0
+  // 并发锁
+  private saveLock: Promise<void> | null = null
+  private cleanupLock: Promise<void> | null = null
 
   constructor(protected config: Config, baseDir: string, cacheName: string, maxSizeConfig: number, ttlConfig: number) {
     this.cacheDir = path.resolve(baseDir, config.downloadPath, cacheName)
@@ -125,39 +146,93 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
     }, 5000)
   }
 
-  // LRU 清理机制
+  // LRU 清理机制（增量清理，带并发保护）
   protected async cleanupIfNeeded(newSize: number): Promise<void> {
+    // 并发保护：如果正在清理，等待完成
+    if (this.cleanupLock) {
+      await this.cleanupLock
+      return
+    }
+
     let totalSize = Array.from(this.entries.values()).reduce((sum, entry) => sum + entry.size, 0)
 
-    if (totalSize + newSize > this.maxCacheSize) {
-      const sortedEntries = Array.from(this.entries.values()).sort((a, b) => {
-        const scoreA = a.lastAccessed + a.accessCount * 3600000
-        const scoreB = b.lastAccessed + b.accessCount * 3600000
-        return scoreA - scoreB
-      })
+    if (totalSize + newSize <= this.maxCacheSize) return
 
-      const targetSize = this.maxCacheSize * 0.7
-      let cleanedCount = 0
-      for (const entry of sortedEntries) {
-        if (totalSize + newSize <= targetSize) break
-        try {
-          await fs.unlink(entry.filePath)
-          this.deleteEntry(entry)
-          totalSize -= entry.size
-          cleanedCount++
-        } catch {
-          // 忽略文件不存在错误
-        }
-      }
-      if (this.config.debug && cleanedCount > 0) logger.info(`LRU 清理: 删除了 ${cleanedCount} 个条目`)
-      this.scheduleSaveIndex()
+    // 设置清理锁
+    this.cleanupLock = this.performCleanup(totalSize, newSize)
+    try {
+      await this.cleanupLock
+    } finally {
+      this.cleanupLock = null
     }
+  }
+
+  private async performCleanup(currentSize: number, newSize: number): Promise<void> {
+    let totalSize = currentSize
+    this.cleanupCount++
+
+    // 优化的 LRU 算法：计算清理优先级分数（越小越应该清理）
+    const entriesWithScore = Array.from(this.entries.values()).map(entry => ({
+      entry,
+      score: this.calculateLRUScore(entry),
+    }))
+
+    // 仅排序需要清理的部分（增量排序）
+    entriesWithScore.sort((a, b) => a.score - b.score)
+
+    const targetSize = this.maxCacheSize * 0.7
+    let cleanedCount = 0
+
+    for (const { entry } of entriesWithScore) {
+      if (totalSize + newSize <= targetSize) break
+
+      try {
+        await fs.unlink(entry.filePath)
+        this.deleteEntry(entry)
+        totalSize -= entry.size
+        cleanedCount++
+      } catch {
+        // 忽略文件不存在错误
+      }
+    }
+
+    this.totalCleanedEntries += cleanedCount
+    if (this.config.debug && cleanedCount > 0) {
+      logger.info(`LRU 清理: 删除了 ${cleanedCount} 个条目，释放 ${((currentSize - totalSize) / 1024 / 1024).toFixed(2)} MB`)
+    }
+    this.scheduleSaveIndex()
+  }
+
+  // 计算 LRU 评分（分数越低越应该被清理）
+  private calculateLRUScore(entry: T): number {
+    const now = Date.now()
+    const age = now - entry.cachedAt // 年龄（毫秒）
+    const idleTime = now - entry.lastAccessed // 空闲时间（毫秒）
+    const accessFrequency = entry.accessCount
+
+    // 综合评分：空闲时间权重 40%，年龄 30%，访问频率 30%
+    return idleTime * 0.4 + age * 0.3 - accessFrequency * 3600000 * 0.3
   }
 
   // 删除条目的抽象方法
   protected abstract deleteEntry(entry: T): void
 
   protected async saveIndex(entries?: T[]): Promise<void> {
+    // 并发保护：如果正在保存，等待完成
+    if (this.saveLock) {
+      await this.saveLock
+      return
+    }
+
+    this.saveLock = this.performSaveIndex(entries)
+    try {
+      await this.saveLock
+    } finally {
+      this.saveLock = null
+    }
+  }
+
+  private async performSaveIndex(entries?: T[]): Promise<void> {
     try {
       const data = JSON.stringify(entries || Array.from(this.entries.values()), null, 2)
       await fs.writeFile(this.indexFile, data, 'utf-8')
@@ -189,9 +264,19 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
     }
   }
 
-  getStats(): { count: number; size: number } {
+  getStats(): { count: number; size: number; hitCount: number; missCount: number; hitRate: string; cleanupCount: number; totalCleanedEntries: number } {
     const totalSize = Array.from(this.entries.values()).reduce((sum, entry) => sum + entry.size, 0)
-    return { count: this.entries.size, size: totalSize }
+    const totalRequests = this.hitCount + this.missCount
+    const hitRate = totalRequests > 0 ? (this.hitCount / totalRequests * 100).toFixed(2) : '0.00'
+    return {
+      count: this.entries.size,
+      size: totalSize,
+      hitCount: this.hitCount,
+      missCount: this.missCount,
+      hitRate: `${hitRate}%`,
+      cleanupCount: this.cleanupCount,
+      totalCleanedEntries: this.totalCleanedEntries,
+    }
   }
 
   async flush(): Promise<void> {
@@ -201,8 +286,15 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
 
   dispose(): void {
     this.clearTimer()
+    // 修复：dispose 时强制保存索引，防止数据丢失
+    if (this.indexDirty) {
+      this.saveIndex().catch((err) => logger.warn(`dispose 时保存索引失败: ${err.message}`))
+    }
     this.entries.clear()
     this.indexDirty = false
+    // 清理并发锁
+    this.saveLock = null
+    this.cleanupLock = null
     if (this.config.debug) logger.info(`${this.cacheDir} 已清理`)
   }
 }
@@ -269,22 +361,28 @@ export class ImageCache extends BaseCache<CacheEntry> {
   async get(galleryId: string, mediaId: string, pageIndex: number, isThumb = false): Promise<Buffer | null> {
     const key = this.getCacheKey(galleryId, mediaId, pageIndex, isThumb)
     const entry = this.entries.get(key)
-    if (!entry) return null
+    if (!entry) {
+      this.missCount++
+      return null
+    }
 
     try {
       await fs.access(entry.filePath)
       if (Date.now() - entry.cachedAt >= this.cacheTTL) {
         await this.delete(galleryId, mediaId, pageIndex, isThumb)
+        this.missCount++
         return null
       }
       const buffer = await fs.readFile(entry.filePath)
       entry.lastAccessed = Date.now()
       entry.accessCount++
+      this.hitCount++
       this.scheduleSaveIndex()
       if (this.config.debug) logger.info(`缓存命中: ${key}`)
       return buffer
     } catch {
       this.entries.delete(key)
+      this.missCount++
       this.scheduleSaveIndex()
       return null
     }
@@ -323,21 +421,27 @@ export class ImageCache extends BaseCache<CacheEntry> {
   async getProcessed(galleryId: string, mediaId: string, pageIndex: number): Promise<{ buffer: Buffer; extension: string } | null> {
     const key = this.getCacheKey(galleryId, mediaId, pageIndex, false, true)
     const entry = this.entries.get(key)
-    if (!entry) return null
+    if (!entry) {
+      this.missCount++
+      return null
+    }
 
     try {
       await fs.access(entry.filePath)
       if (Date.now() - entry.cachedAt >= this.cacheTTL) {
         await this.deleteProcessed(galleryId, mediaId, pageIndex)
+        this.missCount++
         return null
       }
       const buffer = await fs.readFile(entry.filePath)
       entry.lastAccessed = Date.now()
       entry.accessCount++
+      this.hitCount++
       this.scheduleSaveIndex()
       return { buffer, extension: entry.extension }
     } catch {
       this.entries.delete(key)
+      this.missCount++
       this.scheduleSaveIndex()
       return null
     }
@@ -505,7 +609,10 @@ export class PdfCache extends BaseCache<PdfCacheEntry> {
 
     const key = this.getCacheKey(galleryId, password)
     const entry = this.entries.get(key)
-    if (!entry) return null
+    if (!entry) {
+      this.missCount++
+      return null
+    }
 
     try {
       await fs.access(entry.filePath)
@@ -513,23 +620,26 @@ export class PdfCache extends BaseCache<PdfCacheEntry> {
 
       if (isExpired) {
         await this.delete(galleryId, password)
+        this.missCount++
         return null
       }
 
       entry.lastAccessed = Date.now()
       entry.accessCount++
+      this.hitCount++
       this.scheduleSaveIndex()
       if (this.config.debug) logger.info(`PDF 缓存命中: ${galleryId}`)
       return entry.filePath
     } catch {
       this.entries.delete(key)
+      this.missCount++
       this.scheduleSaveIndex()
       return null
     }
   }
 
-  async set(galleryId: string, sourcePath: string, fileName: string, password?: string): Promise<void> {
-    if (!this.config.cache.enablePdfCache) return
+  async set(galleryId: string, sourcePath: string, fileName: string, password?: string): Promise<string | null> {
+    if (!this.config.cache.enablePdfCache) return null
 
     try {
       const key = this.getCacheKey(galleryId, password)
@@ -553,8 +663,10 @@ export class PdfCache extends BaseCache<PdfCacheEntry> {
       this.entries.set(key, entry)
       this.scheduleSaveIndex()
       if (this.config.debug) logger.info(`PDF 已缓存: ${galleryId} (${(stat.size / 1024 / 1024).toFixed(2)} MB)`)
+      return filePath
     } catch (error) {
       logger.warn(`保存 PDF 缓存失败: ${error.message}`)
+      return null
     }
   }
 
