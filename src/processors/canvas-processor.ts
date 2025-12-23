@@ -1,6 +1,6 @@
 /**
  * 基于 @napi-rs/canvas 的高性能图片处理模块
- * 替代原 WASM 实现，提供图片格式转换、质量压缩和反和谐处理
+ * 提供图片格式转换、质量压缩和反和谐处理
  */
 import { createCanvas, loadImage, Image, SKRSContext2D, GlobalFonts } from '@napi-rs/canvas'
 import { logger } from '../utils'
@@ -31,7 +31,7 @@ const SMALL_IMAGE_QUALITY_DELTA = 5  // 小图质量提升
 
 /**
  * Canvas 图片处理器实例
- * 提供与原 WASM 模块相同的 API 接口
+ * 提供完整的图片处理 API
  */
 class CanvasImageProcessor {
   /**

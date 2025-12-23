@@ -14,92 +14,66 @@ let previousConfig: Config | null = null
 export const usage = `
 ## 使用说明
 
-本插件提供 **[nhentai](https://nhentai.net/)** 漫画的搜索与下载功能。
+本插件提供 **[nhentai](https://nhentai.net/)** 漫画搜索与下载。
 
 **注意：本插件内容涉及成人向（NSFW）漫画，请确保在合适的范围内使用。**
 
 ### 快速开始
 
-所有指令均需 \`nh\` 前缀，支持以下调用方式：
+- 所有指令均以 \`nh\` 前缀调用：\`nh.指令\`（推荐）/ \`nh指令\` / \`nh command\`
+- 查看帮助：\`help nh.search\`
 
-- \`nh.指令\` - 标准用法（推荐）
-- \`nh指令\` - 中文无空格
-- \`nh command\` - 英文带空格
+### 常用指令
 
----
+#### 搜索：\`nh.search\`（别名：\`nh搜索\`、\`nhsearch\`）
 
-### 指令列表
-
-#### 1. 搜索漫画 - \`nh.search\`
-
-**别名**: \`nh搜索\`, \`nhsearch\`
-
-**用法**:
+语法：
 \`\`\`
 nh.search <关键词/ID> [选项]
 \`\`\`
 
-**选项**:
+选项：
+- \`-s, --sort <type>\`：\`popular\` / \`popular-today\` / \`popular-week\`
+- \`-l, --lang <lang>\`：\`chinese\` / \`japanese\` / \`english\` / \`all\`
 
-- \`-s, --sort <type>\` - 按热门度排序（\`popular\`, \`popular-today\`, \`popular-week\`）
-- \`-l, --lang <lang>\` - 筛选语言（\`chinese\`, \`japanese\`, \`english\`, \`all\`）
+示例：
+- \`nh搜索 touhou\`
+- \`nh search 608023\`
+- \`nh搜索 touhou -s popular -l chinese\`
 
-**示例**:
+交互（菜单/文本两种模式都支持）：
+- 回复序号：下载对应漫画；\`F\` 下一页；\`B\` 上一页；\`N\` 退出
 
-- \`nh搜索 touhou\` - 按关键词搜索作品
-- \`nh search 608023\` - 查看指定 ID 作品
-- \`nh搜索 touhou -s popular -l chinese\` - 筛选中文语言热门作品
+#### 下载：\`nh.download\`（别名：\`nh下载\`、\`nhdownload\`）
 
-**交互提示**:
-
-- 回复序号 - 下载对应漫画
-- 回复 F - 翻至下一页
-- 回复 B - 返回上一页
-- 回复 N - 退出交互
-
-> 注: 图片菜单模式和文本列表模式均支持以上交互
-
----
-
-#### 2. 下载漫画 - \`nh.download\`
-
-**别名**: \`nh下载\`, \`nhdownload\`
-
-**用法**:
+语法：
 \`\`\`
 nh.download <ID/链接> [选项]
 \`\`\`
 
-**选项**:
+选项：
+- \`-p, --pdf\`：输出 PDF
+- \`-z, --zip\`：输出 ZIP
+- \`-i, --image\`：逐张发送图片
+- \`-k, --key <密码>\`：设置文件密码
 
-- \`-p, --pdf\` - 输出 PDF 文件
-- \`-z, --zip\` - 输出 ZIP 压缩包
-- \`-i, --image\` - 逐张发送图片
-- \`-k, --key <密码>\` - 设置文件密码（ZIP 使用 AES-256 加密）
+示例：
+- \`nh下载 608023 -z -k 1234\`
+- \`nh download https://nhentai.net/g/608023/ --pdf\`
 
-**示例**:
+#### 其他
 
-- \`nh下载 608023 -z -k 1234\` - 下载加密 ZIP
-- \`nh download https://nhentai.net/g/608023/ --pdf\` - 下载 PDF
-
----
-
-#### 3. 其他指令
-
-- \`nh.popular\` / \`nh热门\` - 查看热门漫画
-- \`nh.random\` / \`nh随机\` - 随机推荐
-
----
+- \`nh.popular\` / \`nh热门\`：热门漫画
+- \`nh.random\` / \`nh随机\`：随机推荐
 
 ### 使用提示
 
 - 直接发送 nhentai 链接可自动触发下载（可在配置中关闭）
-- 使用 \`help nh.search\` 查看指令详细说明
 
 ### 注意事项
 
-1. 本插件需要能访问 nhentai.net，若网络受限请配置代理
-2. 内容涉及成人向漫画（NSFW），请在合适场景使用
+1. 需要可访问 nhentai.net 的网络环境（必要时配置代理）
+2. 插件包含 NSFW 内容，请在合适场景使用
 3. 仅供学习交流，请尊重版权
 `
 
@@ -129,13 +103,10 @@ export function apply(ctx: Context, config: Config) {
         logger.error('插件初始化失败，插件将无法使用')
         logger.error('错误详情:', errorMessage)
 
-        if (errorMessage.includes('WASM module not found')) {
-          logger.error('WASM 模块未找到。可能的原因:')
-          logger.error('1. 插件未完整安装，请尝试重新安装')
-          logger.error('2. 如果是从源码构建，请运行: yarn build 或 yarn build:wasm')
-          logger.error('3. 检查 wasm-dist 目录是否存在于插件目录中')
-        } else if (errorMessage.includes('got-scraping')) {
-          logger.error('网络请求模块加载失败，请检查网络连接或重新安装插件')
+        if (errorMessage.includes('got-scraping')) {
+          logger.error('网络请求模块加载失败,请检查网络连接或重新安装插件')
+        } else if (errorMessage.includes('@napi-rs/canvas')) {
+          logger.error('图片处理模块加载失败,请尝试重新安装插件')
         } else {
           logger.error('请检查日志并报告问题到: https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/issues')
         }

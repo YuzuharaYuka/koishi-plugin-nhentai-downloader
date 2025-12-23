@@ -3,7 +3,6 @@
 
 # 源代码目录（不发布 TypeScript 源码）
 src/
-wasm-image-processor/
 
 # 配置和构建文件
 tsconfig.json
@@ -48,10 +47,8 @@ node_modules/
 API-response.txt
 *.tgz
 
-# 确保以下目录和文件会被包含（即使 wasm-dist/.gitignore 存在）
+# 确保以下目录和文件会被包含
 !lib/
-!wasm-dist/
-!wasm-dist/**/*
 !package.json
 !readme.md
 !LICENSE

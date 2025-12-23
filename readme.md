@@ -12,7 +12,7 @@
 - 图片菜单 - 搜索结果以图片网格形式展示，直观查看封面
 - 交互操作 - 搜索结果支持多页浏览和翻页，回复序号发起下载任务
 - 多格式输出 - 支持 PDF、ZIP 压缩包、逐张图片三种输出方式
-- 文件加密 - 支持为 PDF 和 ZIP 文件设置密码保护（ZIP 使用 AES-256 加密）
+- 文件加密 - 支持为 PDF 和 ZIP 文件设置密码保护
 - 链接识别 - 可自动识别并处理消息中的 nhentai 链接
 
 ## 安装
@@ -25,63 +25,44 @@
 
 ## 指令说明
 
-### `nh.search <关键词/ID> [选项]`
+统一前缀：`nh`（推荐用法：`nh.指令`；也支持 `nh指令` / `nh command`）
 
-根据关键词或漫画 ID 进行搜索。
+### 搜索：`nh.search`（别名：`nh搜索`、`nh search`）
 
-- 别名: `nh搜索`, `nh search`
-- 选项:
-  - `-s, --sort <type>` - 按热门度排序。可选值: `popular`, `popular-today`, `popular-week`
-  - `-l, --lang <lang>` - 筛选特定语言。可选值: `chinese`, `japanese`, `english`, `all`
+语法：`nh.search <关键词/ID> [选项]`
 
+选项：
+- `-s, --sort <type>`：`popular` / `popular-today` / `popular-week`
+- `-l, --lang <lang>`：`chinese` / `japanese` / `english` / `all`
+
+示例：
 ```shell
-# 关键词搜索
 nh.search touhou
-
-# 使用选项进行搜索
-nh.search touhou -s popular-week -l chinese
-
-# ID 查询
 nh.search 608023
+nh.search touhou -s popular-week -l chinese
 ```
 
----
+### 下载：`nh.download`（别名：`nh下载`、`nh download`）
 
-### `nh.download <ID/链接> [选项]`
+语法：`nh.download <ID/链接> [选项]`
 
-根据漫画 ID 或 nhentai 官网链接直接下载作品。
+选项：
+- `-p, --pdf`：输出 PDF
+- `-z, --zip`：输出 ZIP
+- `-i, --image`：逐张发送图片
+- `-k, --key <密码>`：为 PDF 或 ZIP 设置密码
 
-- 别名: `nh下载`, `nh download`
-- 选项:
-  - `-p, --pdf` - 输出为 PDF 文件
-  - `-z, --zip` - 输出为 ZIP 压缩包
-  - `-i, --image` - 输出为逐张图片
-  - `-k, --key <密码>` - 为 PDF 或 ZIP 文件设置密码
-
+示例：
 ```shell
-# 下载并打包为 ZIP
 nh.download 608023 -z
-
-# 下载链接对应的漫画，输出为加密 PDF
 nh.download https://nhentai.net/g/608023/ -p -k password
 ```
 
----
+### 热门：`nh.popular`（别名：`nh热门`、`nh popular`）
 
-### `nh.popular`
+说明：等价于 `nh.search "" -s popular`
 
-获取 nhentai 当前的热门漫画列表。
-
-- 别名: `nh热门`, `nh popular`
-- 说明: 此指令为 `nh.search "" -s popular` 的快捷方式
-
----
-
-### `nh.random`
-
-随机获取一本漫画的详细信息，并提示是否下载。
-
-- 别名: `nh随机`, `nh random`, `天降好运`
+### 随机：`nh.random`（别名：`nh随机`、`nh random`、`天降好运`）
 
 ---
 
