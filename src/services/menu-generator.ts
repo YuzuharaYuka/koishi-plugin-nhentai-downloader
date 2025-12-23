@@ -604,7 +604,7 @@ export class MenuGenerator {
   }
 
   // 生成单个画廊的详细信息菜单
-  async generateDetailMenu(gallery: Gallery, coverImage: Buffer): Promise<Buffer> {
+  async generateDetailMenu(gallery: Gallery, coverImage: Buffer, showRefreshOption: boolean = false): Promise<Buffer> {
     // 1. 先加载图片获取尺寸
     let img: any
     let imgAspect = 0.7 // 默认纵横比
@@ -886,7 +886,10 @@ export class MenuGenerator {
     ctx.textBaseline = 'middle'
     ctx.fillStyle = '#eee'
     ctx.font = `bold 20px ${CJK_FONT_FAMILY}`
-    ctx.fillText('回复 [Y] 下载 · [F] 换一个 · [N] 取消', canvasWidth / 2, canvasHeight - 20)
+    const promptText = showRefreshOption
+      ? '回复 [Y] 下载 · [F] 换一个 · [N] 取消'
+      : '回复 [Y] 下载 · [N] 取消'
+    ctx.fillText(promptText, canvasWidth / 2, canvasHeight - 20)
 
     return canvas.toBuffer('image/png')
   }

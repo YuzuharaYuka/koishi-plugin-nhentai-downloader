@@ -60,10 +60,10 @@ export class MenuService {
   }
 
   // 生成并发送单个画廊的详细信息菜单
-  async sendDetailMenu(session: Session, gallery: Gallery, coverBuffer: Buffer): Promise<void> {
+  async sendDetailMenu(session: Session, gallery: Gallery, coverBuffer: Buffer, showRefreshOption: boolean = false): Promise<void> {
     try {
       // 生成菜单图片
-      const menuImage = await this.menuGenerator.generateDetailMenu(gallery, coverBuffer)
+      const menuImage = await this.menuGenerator.generateDetailMenu(gallery, coverBuffer, showRefreshOption)
 
       // 发送菜单图片
       await session.send(h.image(menuImage, 'image/png'))

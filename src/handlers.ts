@@ -319,7 +319,7 @@ export async function handleRandomWithInteraction(
         const coverBuffer = cover ? cover.buffer : Buffer.alloc(0)
 
         try {
-          await menuService.sendDetailMenu(session, gallery, coverBuffer)
+          await menuService.sendDetailMenu(session, gallery, coverBuffer, true)
           await session.send('是否下载? [Y]下载 [F]换一个 [N]退出')
 
           const reply = await session.prompt(config.promptTimeout * 1000)
@@ -447,7 +447,7 @@ export async function handleIdSearchWithMenu(
   const coverBuffer = cover ? cover.buffer : Buffer.alloc(0)
 
   try {
-    await menuService.sendDetailMenu(session, gallery, coverBuffer)
+    await menuService.sendDetailMenu(session, gallery, coverBuffer, false)
 
     const reply = await session.prompt(config.promptTimeout * 1000)
     if (!reply) {
