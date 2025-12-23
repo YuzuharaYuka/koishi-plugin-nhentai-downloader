@@ -4,7 +4,7 @@ import { logger } from './utils'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
-import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, handleIdSearchWithMenu, SearchOptions } from './handlers'
+import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, handleIdSearchWithMenu, handleRandomWithInteraction, SearchOptions } from './handlers'
 import { handleDownloadCommand, DownloadOptions } from './handlers'
 import { galleryIdRegex, galleryUrlRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
 
@@ -152,7 +152,7 @@ export function registerRandomCommands(
   nhCmd
     .subcommand('.random', '随机推荐一本漫画')
     .alias('nh随机', 'nhrandom', 'nh random')
-    .usage('随机获取一本 nhentai 漫画的详细信息，并提示是否下载。')
+    .usage('随机获取一本 nhentai 漫画的详细信息。交互选项：[Y]下载 [F]换一个 [N]退出')
     .example('nh.random')
     .action(async ({ session }) => {
       if (!ensureInitialized(session)) return
@@ -162,21 +162,7 @@ export function registerRandomCommands(
       await session.send(h('quote', { id: session.messageId }) + '正在进行一次天降好运...')
 
       try {
-        const randomId = await nhentaiService.getRandomGalleryId()
-        if (!randomId) {
-          throw new Error('获取随机画廊ID失败。')
-        }
-
-        if (config.searchMode === 'menu' && menuService) {
-          await handleIdSearchWithMenu(session, randomId, nhentaiService, menuService, config)
-        } else {
-          await handleIdSearch(session, randomId, nhentaiService, config, {
-            useForward: config.textMode.useForward,
-            showTags: config.textMode.showTags,
-            showLink: config.textMode.showLink,
-            promptDownload: true,
-          })
-        }
+        await handleRandomWithInteraction(session, nhentaiService, menuService, config)
       } catch (error) {
         logger.error(`[随机] 命令执行失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)

@@ -293,6 +293,143 @@ async function handleUserInput(
   return 'break'
 }
 
+export async function handleRandomWithInteraction(
+  session: Session,
+  nhentaiService: NhentaiService,
+  menuService: MenuService | null,
+  config: Config,
+): Promise<void> {
+  while (true) {
+    try {
+      const randomId = await nhentaiService.getRandomGalleryId()
+      if (!randomId) {
+        await session.send('获取随机画廊ID失败，请检查网络连接或稍后重试。')
+        break
+      }
+
+      if (config.searchMode === 'menu' && menuService) {
+        // 菜单模式
+        const result = await nhentaiService.getGalleryWithCover(randomId)
+        if (!result) {
+          await session.send(`获取画廊 ${randomId} 信息失败。`)
+          break
+        }
+
+        const { gallery, cover } = result
+        const coverBuffer = cover ? cover.buffer : Buffer.alloc(0)
+
+        try {
+          await menuService.sendDetailMenu(session, gallery, coverBuffer)
+          await session.send('是否下载? [Y]下载 [F]换一个 [N]退出')
+
+          const reply = await session.prompt(config.promptTimeout * 1000)
+          if (!reply) {
+            await session.send('操作超时，已自动取消。')
+            menuService.clearMenu(session)
+            break
+          }
+
+          const lowerReply = reply.toLowerCase()
+          if (lowerReply === 'y') {
+            menuService.clearMenu(session)
+            await session.execute(`nh.download ${randomId}`)
+            break
+          } else if (lowerReply === 'f') {
+            menuService.clearMenu(session)
+            await session.send('正在进行一次天降好运...')
+            continue
+          } else if (lowerReply === 'n') {
+            menuService.clearMenu(session)
+            await session.send('操作已取消。')
+            break
+          } else {
+            menuService.clearMenu(session)
+            await session.send('无效输入，操作已取消。')
+            break
+          }
+        } catch (error) {
+          logger.error(`详细菜单处理失败: ${error.message}`)
+          await session.send('菜单生成失败，将使用传统模式显示结果。')
+          // 切换到文本模式
+          await handleRandomWithTextMode(session, randomId, nhentaiService, config)
+          break
+        }
+      } else {
+        // 文本模式
+        await handleRandomWithTextMode(session, randomId, nhentaiService, config)
+        break
+      }
+    } catch (error) {
+      logger.error(`[随机] 处理失败: %o`, error)
+      await session.send('操作失败，请稍后重试。')
+      break
+    }
+  }
+}
+
+async function handleRandomWithTextMode(
+  session: Session,
+  initialId: string,
+  nhentaiService: NhentaiService,
+  config: Config,
+): Promise<void> {
+  let currentId = initialId
+
+  while (true) {
+    const result = await nhentaiService.getGalleryWithCover(currentId)
+    if (!result) {
+      await session.send(`获取画廊 ${currentId} 信息失败。`)
+      break
+    }
+
+    const { gallery, cover } = result
+    const galleryNode = formatGalleryInfo(gallery, undefined, {
+      showTags: config.textMode.showTags,
+      showLink: config.textMode.showLink,
+    })
+    const messageContent = h('message', {}, galleryNode)
+    if (cover && config.textMode.showThumbnails) {
+      messageContent.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
+    }
+
+    await sendWithOptionalForward(
+      session,
+      messageContent,
+      config.textMode.useForward,
+      FORWARD_SUPPORTED_PLATFORMS,
+    )
+
+    await session.send('是否下载? [Y]下载 [F]换一个 [N]退出')
+    const reply = await session.prompt(config.promptTimeout * 1000)
+
+    if (!reply) {
+      await session.send('操作超时，已自动取消。')
+      break
+    }
+
+    const lowerReply = reply.toLowerCase()
+    if (lowerReply === 'y') {
+      await session.execute(`nh.download ${currentId}`)
+      break
+    } else if (lowerReply === 'f') {
+      await session.send('正在进行一次天降好运...')
+      const randomId = await nhentaiService.getRandomGalleryId()
+      if (!randomId) {
+        await session.send('获取随机画廊ID失败。')
+        break
+      }
+      currentId = randomId
+      continue
+    } else if (lowerReply === 'n') {
+      await session.send('操作已取消。')
+      break
+    } else {
+      await session.send('无效输入，操作已取消。')
+      break
+    }
+  }
+}
+
 export async function handleIdSearchWithMenu(
   session: Session,
   id: string,

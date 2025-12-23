@@ -886,7 +886,7 @@ export class MenuGenerator {
     ctx.textBaseline = 'middle'
     ctx.fillStyle = '#eee'
     ctx.font = `bold 20px ${CJK_FONT_FAMILY}`
-    ctx.fillText('回复 [Y] 下载 · [N] 取消', canvasWidth / 2, canvasHeight - 20)
+    ctx.fillText('回复 [Y] 下载 · [F] 换一个 · [N] 取消', canvasWidth / 2, canvasHeight - 20)
 
     return canvas.toBuffer('image/png')
   }

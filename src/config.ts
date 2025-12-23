@@ -102,6 +102,16 @@ export const Config: Schema<Config> = Schema.intersect([
     ])
       .description('搜索结果的显示模式')
       .default('menu'),
+    menuMode: Schema.object({
+      columns: Schema.number()
+        .min(1).max(5).step(1)
+        .description('每行显示的画廊数量')
+        .default(3),
+      maxRows: Schema.number()
+        .min(1).max(5).step(1)
+        .description('最大行数')
+        .default(3),
+    }).description('图片菜单模式设置'),
     textMode: Schema.object({
       searchResultLimit: Schema.number()
         .min(1).max(25).step(1)
@@ -120,16 +130,6 @@ export const Config: Schema<Config> = Schema.intersect([
         .description('使用合并转发发送搜索结果')
         .default(true),
     }).description('文本模式设置'),
-    menuMode: Schema.object({
-      columns: Schema.number()
-        .min(1).max(5).step(1)
-        .description('每行显示的画廊数量')
-        .default(3),
-      maxRows: Schema.number()
-        .min(1).max(5).step(1)
-        .description('最大行数')
-        .default(3),
-    }).description('图片菜单模式设置'),
   }).description('搜索设置'),
 
   // ==================== 消息设置 ====================
@@ -143,7 +143,7 @@ export const Config: Schema<Config> = Schema.intersect([
       .default(1),
     promptTimeout: Schema.number()
       .min(5).step(1)
-      .description('交互式操作的超时时间 (秒)')
+      .description('交互操作的超时时间 (秒)')
       .default(60),
   }).description('消息设置'),
 

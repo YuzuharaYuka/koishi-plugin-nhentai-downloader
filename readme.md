@@ -32,10 +32,12 @@
 语法：`nh.search <关键词/ID> [选项]`
 
 选项：
+
 - `-s, --sort <type>`：`popular` / `popular-today` / `popular-week`
 - `-l, --lang <lang>`：`chinese` / `japanese` / `english` / `all`
 
 示例：
+
 ```shell
 nh.search touhou
 nh.search 608023
@@ -47,12 +49,14 @@ nh.search touhou -s popular-week -l chinese
 语法：`nh.download <ID/链接> [选项]`
 
 选项：
+
 - `-p, --pdf`：输出 PDF
 - `-z, --zip`：输出 ZIP
 - `-i, --image`：逐张发送图片
 - `-k, --key <密码>`：为 PDF 或 ZIP 设置密码
 
 示例：
+
 ```shell
 nh.download 608023 -z
 nh.download https://nhentai.net/g/608023/ -p -k password
@@ -63,6 +67,8 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 说明：等价于 `nh.search "" -s popular`
 
 ### 随机：`nh.random`（别名：`nh随机`、`nh random`、`天降好运`）
+
+说明：随机推荐一本漫画，支持交互操作
 
 ---
 
