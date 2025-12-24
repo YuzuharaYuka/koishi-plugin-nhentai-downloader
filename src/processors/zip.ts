@@ -2,6 +2,7 @@
 import { PassThrough } from 'stream'
 import { DownloadedImage } from './types'
 import { GC_TRIGGER_INTERVAL } from '../constants'
+import { logger } from '../utils'
 
 // 延迟加载 archiver 及其加密格式（避免在模块初始化时加载）
 let archiverModule: any = null
@@ -73,13 +74,21 @@ export async function createZip(
   ;(async () => {
     try {
       let nextPageNum = 0
+      let skippedCount = 0
       // 临时缓存用于保持页面顺序
       const pageBuffer = new Map<number, { buffer: Buffer; extension: string }>()
 
       for await (const { index, buffer, extension } of imageStream) {
-        // 类型守卫：验证 buffer 是否有效
-        if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
-          throw new TypeError(`第 ${index + 1} 张图片的 buffer 无效: ${typeof buffer}, length=${buffer?.length ?? 0}`)
+        // 容错处理：跳过无效 buffer 而不是终止整个流程
+        if (!Buffer.isBuffer(buffer)) {
+          logger.warn(`[ZIP] 第 ${index + 1} 张图片类型无效 (${typeof buffer})，已跳过`)
+          skippedCount++
+          continue
+        }
+        if (buffer.length === 0) {
+          logger.warn(`[ZIP] 第 ${index + 1} 张图片为空 (0 bytes)，已跳过`)
+          skippedCount++
+          continue
         }
 
         pageBuffer.set(index, { buffer, extension })
@@ -96,6 +105,11 @@ export async function createZip(
           if (nextPageNum % GC_TRIGGER_INTERVAL === 0 && global.gc) global.gc() // 定期触发垃圾回收
         }
       }
+
+      if (skippedCount > 0) {
+        logger.warn(`[ZIP] 总共跳过 ${skippedCount} 张无效图片`)
+      }
+
       await zip.finalize()
     } catch (error) {
       zip.destroy(error)

@@ -138,11 +138,11 @@ export const Config: Schema<Config> = Schema.intersect([
       .description('以图片形式发送画廊时使用合并转发')
       .default(true),
     imageSendDelay: Schema.number()
-      .min(0).step(1)
+      .min(0).max(10).step(1)
       .description('以图片形式发送时每张图片的发送间隔 (秒)')
       .default(1),
     promptTimeout: Schema.number()
-      .min(5).step(1)
+      .min(5).max(600).step(1)
       .description('交互操作的超时时间 (秒)')
       .default(60),
   }).description('消息设置'),
@@ -156,8 +156,10 @@ export const Config: Schema<Config> = Schema.intersect([
       Schema.const('buffer').description('内存 (buffer)'),
       Schema.const('file').description('文件路径 (file)'),
     ])
-      .description('发送 PDF 和 ZIP 文件的方式')
-      .default('buffer'),
+      .description('发送 PDF 和 ZIP 文件的方式 <br>'+
+        '**注意：** buffer模式只适用于发送小型文件或 Docker 容器中 Koishi 与 Bot 协议端卷不共享的情况，'+
+        '在发送大型文件（100MB以上）时可能导致高内存占用或 Bot 协议端进程崩溃（已知napcat）')
+      .default('file'),
     prependIdToFile: Schema.boolean()
       .description('在文件名前添加画廊 ID')
       .default(true),
@@ -181,7 +183,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .description('JPEG 压缩质量 (1-100)，质量越低体积越小')
         .default(85),
       threshold: Schema.number()
-        .min(0)
+        .min(0).max(10240)
         .description('小于此体积 (KB) 的图片将不被压缩，设为 0 则全部压缩')
         .default(500),
       targetFormat: Schema.union([

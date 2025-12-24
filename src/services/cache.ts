@@ -347,7 +347,10 @@ export class ImageCache extends BaseCache<CacheEntry> {
   }
 
   private getCacheKey(galleryId: string, mediaId: string, pageIndex: number, isThumb = false, processed = false): string {
-    return `${galleryId}-${mediaId}-${pageIndex}${isThumb ? '-thumb' : ''}${processed ? '-processed' : ''}`
+    // 确保 galleryId 为字符串类型（防御性编程）
+    const gidStr = String(galleryId)
+    const midStr = String(mediaId)
+    return `${gidStr}-${midStr}-${pageIndex}${isThumb ? '-thumb' : ''}${processed ? '-processed' : ''}`
   }
 
   private getCacheFilePath(galleryId: string, mediaId: string, pageIndex: number, extension: string, isThumb = false, processed = false): string {
