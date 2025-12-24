@@ -16,15 +16,31 @@ export async function importESM<T = any>(moduleName: string): Promise<T> {
     const module = await import(moduleName)
     return (module.default ?? module) as T
   } catch (error) {
-    logger.error(`导入模块 "${moduleName}" 失败: ${error.message}`)
-    throw new Error(`无法加载模块 ${moduleName}: ${error.message}`)
+    const message = getErrorMessage(error)
+    logger.error(`导入模块 "${moduleName}" 失败: ${message}`)
+    throw new Error(`无法加载模块 ${moduleName}: ${message}`)
+  }
+}
+
+// 统一的错误消息提取函数
+export function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
   }
 }
 
 // 统一的错误日志记录函数
-export function logError(context: string, identifier: string | number, error: any): void {
-  const errorMessage = error.response?.body
-    ? JSON.stringify(error.response.body)
-    : error.message || String(error)
-  logger.error(`${context} ${identifier} 失败: ${errorMessage}`)
+export function logError(context: string, identifier: string | number, error: unknown): void {
+  const errorMessage = getErrorMessage(error)
+  const response = (error as any)?.response?.body
+
+  if (response) {
+    logger.error(`[${context}] ${identifier} 失败: ${errorMessage}\n响应: ${JSON.stringify(response)}`)
+  } else {
+    logger.error(`[${context}] ${identifier} 失败: ${errorMessage}`)
+  }
 }

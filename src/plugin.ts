@@ -13,23 +13,17 @@ export class NhentaiPlugin {
   private nhentaiService!: NhentaiService
   private menuService: MenuService | null = null
   private isInitialized = false
+  private previousConfig: Config | null = null
 
   constructor(private ctx: Context, private config: Config) {
     this.apiService = new ApiService(ctx, config)
-    this.debugLog('调试模式已启用')
-  }
-
-  // 调试日志辅助方法
-  private debugLog(message: string): void {
-    if (this.config.debug) {
-      logger.info(message)
-    }
+    logger.debug('NhentaiPlugin 实例已创建')
   }
 
   // 初始化插件，加载 Canvas 处理器并创建服务实例
   public async initialize(): Promise<void> {
     await initCanvasProcessor()
-    this.debugLog('Canvas 图片处理器加载成功')
+    logger.debug('Canvas 图片处理器加载成功')
 
     await this.apiService.initialize()
     this.processor = new Processor(this.ctx, this.config)
@@ -39,7 +33,7 @@ export class NhentaiPlugin {
     // 初始化菜单服务（仅在图片菜单模式下）
     if (this.config.searchMode === 'menu') {
       this.menuService = new MenuService(this.config, this.nhentaiService)
-      this.debugLog('图片菜单服务已启用')
+      logger.debug('图片菜单服务已启用')
     }
 
     this.isInitialized = true
@@ -74,13 +68,23 @@ export class NhentaiPlugin {
     return this.config
   }
 
+  // 获取上次配置
+  public getPreviousConfig(): Config | null {
+    return this.previousConfig
+  }
+
+  // 设置上次配置
+  public setPreviousConfig(config: Config): void {
+    this.previousConfig = config
+  }
+
   // 清理插件资源，支持热重载
   public dispose(): void {
     this.menuService?.dispose()
     this.apiService?.dispose()
     this.processor?.dispose()
     this.isInitialized = false
-    this.debugLog('NhentaiPlugin 资源已清理')
+    logger.debug('NhentaiPlugin 资源已清理')
   }
 }
 

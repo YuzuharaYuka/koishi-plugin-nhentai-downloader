@@ -7,9 +7,12 @@ import { createLinkRecognitionMiddleware } from './middleware'
 
 export * from './config'
 export const name = 'nhentai-downloader'
-export const inject = []
 
-let previousConfig: Config | null = null
+// 无依赖
+export const inject = {
+  required: [],
+  optional: []
+}
 
 export const usage = `
 ## 使用说明
@@ -78,8 +81,19 @@ nh.download <ID/链接> [选项]
 `
 
 export function apply(ctx: Context, config: Config) {
+  // 配置运行时校验，确保配置在安全范围内
+  const safeConfig: Config = {
+    ...config,
+    downloadConcurrency: Math.max(1, Math.min(25, config.downloadConcurrency)),
+    imageSendDelay: Math.max(0, config.imageSendDelay),
+    promptTimeout: Math.max(5, Math.min(300, config.promptTimeout)),
+    downloadTimeout: Math.max(5, Math.min(300, config.downloadTimeout)),
+    downloadRetries: Math.max(0, Math.min(5, config.downloadRetries)),
+    downloadRetryDelay: Math.max(0, Math.min(60, config.downloadRetryDelay)),
+  }
+
   ctx.plugin((ctx) => {
-    const plugin = new NhentaiPlugin(ctx, config)
+    const plugin = new NhentaiPlugin(ctx, safeConfig)
 
     registerAllCommands(
       ctx,
@@ -94,9 +108,9 @@ export function apply(ctx: Context, config: Config) {
 
     ctx.on('ready', async () => {
       try {
-        await checkAndClearCaches(ctx, config, previousConfig)
+        await checkAndClearCaches(ctx, safeConfig, plugin.getPreviousConfig())
         await plugin.initialize()
-        previousConfig = { ...config }
+        plugin.setPreviousConfig({ ...safeConfig })
         logger.info('插件初始化完成')
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
@@ -117,7 +131,7 @@ export function apply(ctx: Context, config: Config) {
 
     ctx.on('dispose', () => {
       plugin.dispose()
-      if (config.debug) logger.info('插件资源已释放')
+      logger.debug('插件资源已释放')
     })
   })
 }
