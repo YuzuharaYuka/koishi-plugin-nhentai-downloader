@@ -1,6 +1,7 @@
 // ZIP 生成模块，负责创建和加密 ZIP 压缩文件
 import { PassThrough } from 'stream'
 import { DownloadedImage } from './types'
+import { GC_TRIGGER_INTERVAL } from '../constants'
 
 // 延迟加载 archiver 及其加密格式（避免在模块初始化时加载）
 let archiverModule: any = null
@@ -31,11 +32,16 @@ export async function createZip(
   imageCompressionEnabled: boolean,
   folderName?: string,
 ): Promise<Buffer> {
+  // 类型守卫：验证密码类型
+  if (password !== undefined && typeof password !== 'string') {
+    throw new TypeError(`无效的密码类型: ${typeof password}`)
+  }
+
   // 延迟加载 archiver（仅在需要时加载）
   const archiver = await ensureArchiverInitialized()
 
-  const isEncrypted = !!password
-  const format = isEncrypted ? 'zip-encrypted' : 'zip'
+  // 简化条件表达式：直接判断 password 是否为 truthy
+  const format = password ? 'zip-encrypted' : 'zip'
 
   // 智能压缩策略：图片已压缩则用存储模式，否则用标准压缩
   const compressionLevel = imageCompressionEnabled ? 0 : 6
@@ -44,7 +50,7 @@ export async function createZip(
   const archiveOptions: any = {
     zlib: { level: compressionLevel },
   }
-  if (isEncrypted) {
+  if (password) {
     archiveOptions.encryptionMethod = 'aes256'
     archiveOptions.password = password
   }
@@ -71,6 +77,11 @@ export async function createZip(
       const pageBuffer = new Map<number, { buffer: Buffer; extension: string }>()
 
       for await (const { index, buffer, extension } of imageStream) {
+        // 类型守卫：验证 buffer 是否有效
+        if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+          throw new TypeError(`第 ${index + 1} 张图片的 buffer 无效: ${typeof buffer}, length=${buffer?.length ?? 0}`)
+        }
+
         pageBuffer.set(index, { buffer, extension })
 
         // 按顺序将图片写入 ZIP，确保页面编号连续
@@ -82,7 +93,7 @@ export async function createZip(
           zip.append(img, { name: fileName })
           nextPageNum++
 
-          if (nextPageNum % 50 === 0 && global.gc) global.gc() // 定期触发垃圾回收
+          if (nextPageNum % GC_TRIGGER_INTERVAL === 0 && global.gc) global.gc() // 定期触发垃圾回收
         }
       }
       await zip.finalize()

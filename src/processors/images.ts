@@ -90,6 +90,11 @@ export async function convertImageForMode(
   mode: 'pdf' | 'zip' | 'image',
   config: Config,
 ): Promise<{ buffer: Buffer; finalFormat: string }> {
+  // 类型守卫：验证 buffer 是否为有效的 Buffer 对象
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new TypeError(`无效的图片 buffer: ${typeof buffer}, length=${buffer?.length ?? 0}`)
+  }
+
   // 图片模式：直接返回原始格式
   if (mode === 'image') {
     return { buffer, finalFormat: format }
@@ -232,10 +237,23 @@ export async function downloadImage(
 ): Promise<DownloadedImage | { index: number; error: Error }> {
   const debugLog = config.debug
 
+  // 类型守卫：验证并标准化 galleryId（支持数字自动转换为字符串）
+  if (gid === undefined || gid === null) {
+    return { index, error: new Error('galleryId 不能为空') }
+  }
+  const normalizedGid = typeof gid === 'string' ? gid : String(gid)
+  if (!normalizedGid || normalizedGid === 'undefined' || normalizedGid === 'null') {
+    return { index, error: new Error('galleryId 无效') }
+  }
+  // 使用标准化后的 gid
+  const effectiveGid = normalizedGid
+
+  // mediaId 是可选的，不进行严格类型检查（缓存层会自动处理 undefined 情况）
+
   // 尝试从缓存获取
-  const cached = await getCachedImageIfExists(imageCache, gid, mediaId, index, url, debugLog)
+  const cached = await getCachedImageIfExists(imageCache, effectiveGid, mediaId, index, url, debugLog)
   if (cached) {
-    return { index, buffer: cached.buffer, extension: cached.extension, galleryId: gid, mediaId }
+    return { index, buffer: cached.buffer, extension: cached.extension, galleryId: effectiveGid, mediaId }
   }
 
   const originalUrl = new URL(url)
@@ -248,7 +266,7 @@ export async function downloadImage(
 
   // 优先使用之前成功过的主机
   if (config.enableSmartRetry) {
-    prioritizeSuccessfulHost(hostsToTry, successfulHosts, gid)
+    prioritizeSuccessfulHost(hostsToTry, successfulHosts, effectiveGid)
   }
 
   for (const host of hostsToTry) {
@@ -257,14 +275,14 @@ export async function downloadImage(
     const urlsWithHost = [testUrl.href, ...fallbackExts.map((ext) => testUrl.href.replace(`.${originalExt}`, `.${ext}`))]
 
     for (const currentUrl of urlsWithHost) {
-      const buffer = await attemptDownload(got, currentUrl, gid, retries, config, sessionToken)
+      const buffer = await attemptDownload(got, currentUrl, effectiveGid, retries, config, sessionToken)
       if (buffer) {
         const finalExt = getFileExtension(currentUrl)
-        successfulHosts.set(gid, host)
+        successfulHosts.set(effectiveGid, host)
 
         // 保存到缓存
-        await saveCacheIfPossible(imageCache, gid, mediaId, index, buffer, finalExt, currentUrl, debugLog)
-        return { index, buffer, extension: finalExt, galleryId: gid, mediaId }
+        await saveCacheIfPossible(imageCache, effectiveGid, mediaId, index, buffer, finalExt, currentUrl, debugLog)
+        return { index, buffer, extension: finalExt, galleryId: effectiveGid, mediaId }
       }
     }
     debugLog && logger.info(`域名 ${host} 失败，切换到下一个`)

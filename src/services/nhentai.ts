@@ -1,6 +1,6 @@
 ﻿import { Config } from '../config'
 import { logger, getErrorMessage } from '../utils'
-import { THUMB_HOST_PRIMARY, imageExtMap } from '../constants'
+import { THUMB_HOST_PRIMARY, imageExtMap, COVER_DOWNLOAD_TIMEOUT_MS } from '../constants'
 import { Processor } from '../processor'
 import type { Gallery } from '../types'
 import { ApiService } from './api'
@@ -59,14 +59,30 @@ export class CoverService {
 
   private async processDownloadResult(result: any, galleryId: string): Promise<{ buffer: Buffer; extension: string } | null> {
     try {
-      if ('buffer' in result && result.buffer && Buffer.isBuffer(result.buffer)) {
-        // 菜单缩略图保持原格式，避免不必要的转换
-        const processed = await this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`, true)
-        const extension = processed.format === 'original' ? result.extension : (processed.format === 'webp' ? 'webp' : (processed.format === 'png' ? 'png' : 'jpg'))
-        return { buffer: processed.buffer, extension }
+      // 调试：检查 result 结构
+      if (!('buffer' in result)) {
+        if (this.config.debug) {
+          logger.warn(`画廊 ${galleryId} 下载结果无 buffer 属性: ${JSON.stringify(Object.keys(result))}`)
+        } else {
+          logger.warn(`画廊 ${galleryId} 下载结果无效（无 buffer 属性）`)
+        }
+        return null
       }
-      logger.warn(`画廊 ${galleryId} 下载结果无效`)
-      return null
+
+      if (!result.buffer) {
+        logger.warn(`画廊 ${galleryId} 下载结果 buffer 为空: ${result.buffer}`)
+        return null
+      }
+
+      if (!Buffer.isBuffer(result.buffer)) {
+        logger.warn(`画廊 ${galleryId} 下载结果 buffer 类型错误: ${typeof result.buffer}`)
+        return null
+      }
+
+      // 菜单缩略图保持原格式，避免不必要的转换
+      const processed = await this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`, true)
+      const extension = processed.format === 'original' ? result.extension : (processed.format === 'webp' ? 'webp' : (processed.format === 'png' ? 'png' : 'jpg'))
+      return { buffer: processed.buffer, extension }
     } catch (error) {
       const errorMsg = getErrorMessage(error)
       logger.error(`处理画廊 ${galleryId} 下载结果失败: ${errorMsg}`)
@@ -133,7 +149,7 @@ export class CoverService {
               1,
             )
 
-            const result = await downloadWithTimeout(downloadPromise, 30000, '缩略图下载超时')
+            const result = await downloadWithTimeout(downloadPromise, COVER_DOWNLOAD_TIMEOUT_MS, '缩略图下载超时')
             const processed = await this.processDownloadResult(result, gallery.id as string)
             if (processed) {
               covers.set(gallery.id as string, processed)

@@ -1,6 +1,7 @@
 import { Gallery } from '../types'
 import { Config } from '../config'
 import { logger } from '../utils'
+import { IMAGE_LOAD_TIMEOUT_MS } from '../constants'
 import { createCanvas, loadImage, Image, GlobalFonts } from '../processors/canvas-processor'
 
 // 菜单生成器配置接口
@@ -342,7 +343,7 @@ export class MenuGenerator {
             img.onerror = (err) => reject(new Error('Image load failed'))
           }),
           new Promise<void>((_, reject) => {
-            setTimeout(() => reject(new Error('Image load timeout')), 5000)
+            setTimeout(() => reject(new Error('Image load timeout')), IMAGE_LOAD_TIMEOUT_MS)
           })
         ])
 
@@ -1002,7 +1003,7 @@ export class MenuGenerator {
   // 释放资源
   dispose(): void {
     if (this.config.debug) {
-      logger.info('菜单生成器已清理')
+      logger.info('菜单生成器已释放')
     }
   }
 }

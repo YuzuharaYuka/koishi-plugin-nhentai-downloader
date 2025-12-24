@@ -84,7 +84,7 @@ export class NhentaiPlugin {
     this.apiService?.dispose()
     this.processor?.dispose()
     this.isInitialized = false
-    logger.debug('NhentaiPlugin 资源已清理')
+    logger.debug('NhentaiPlugin 资源已释放')
   }
 }
 

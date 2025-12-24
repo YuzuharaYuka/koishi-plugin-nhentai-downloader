@@ -142,7 +142,7 @@ export class GotManager {
     this.sessionTokens.clear()
     this.initialized = false
 
-    if (this.config.debug) logger.info('Got 实例已清理')
+    if (this.config.debug) logger.info('Got 实例已释放')
   }
 }
 
@@ -278,6 +278,6 @@ export class ApiService {
       this.cache = null
     }
     this.gotManager.dispose()
-    if (this.config.debug) logger.info('ApiService 已清理')
+    if (this.config.debug) logger.info('ApiService 已释放')
   }
 }

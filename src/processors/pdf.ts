@@ -6,6 +6,7 @@ import { DownloadedImage } from './types'
 import { Config } from '../config'
 import { logger } from '../utils'
 import { convertImageForMode, conditionallyCompressJpeg } from './images'
+import { GC_TRIGGER_INTERVAL } from '../constants'
 
 // 延迟加载 pdfkit（避免在模块初始化时加载 canvas 依赖）
 let PDFDocument: any = null
@@ -144,8 +145,8 @@ export async function createPdf(
             if (config.debug) onProgress(`处理第 ${pageCount} 张图片失败，已跳过。`)
           }
 
-          // 手动 GC 释放内存（每 50 页触发一次）
-          if (pageCount % 50 === 0 && global.gc) {
+          // 手动 GC 释放内存（每 N 页触发一次）
+          if (pageCount % GC_TRIGGER_INTERVAL === 0 && global.gc) {
             global.gc()
           }
         }

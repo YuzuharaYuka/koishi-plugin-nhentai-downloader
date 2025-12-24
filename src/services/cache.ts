@@ -295,7 +295,7 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
     // 清理并发锁
     this.saveLock = null
     this.cleanupLock = null
-    if (this.config.debug) logger.info(`${this.cacheDir} 已清理`)
+    if (this.config.debug) logger.info(`${this.cacheDir} 已释放`)
   }
 }
 

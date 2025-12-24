@@ -39,3 +39,28 @@ export const VALID_LANG_OPTIONS = ['chinese', 'japanese', 'english', 'all'];
 
 // 画廊信息中的标签显示限制数量
 export const TAG_DISPLAY_LIMIT = 8;
+
+// ==================== 性能和内存管理常量 ====================
+// GC 触发间隔（处理多少页后触发垃圾回收）
+export const GC_TRIGGER_INTERVAL = 50;
+
+// 轮询间隔（毫秒）
+export const POLLING_INTERVAL_MS = 50;
+
+// 进度更新节流间隔（毫秒）
+export const PROGRESS_UPDATE_INTERVAL_MS = 1500;
+
+// 菜单过期时间（毫秒）
+export const MENU_EXPIRE_TIME_MS = 5 * 60 * 1000; // 5分钟
+
+// 菜单清理间隔（毫秒）
+export const MENU_CLEANUP_INTERVAL_MS = 60 * 1000; // 1分钟
+
+// 图片加载超时时间（毫秒）
+export const IMAGE_LOAD_TIMEOUT_MS = 5000; // 5秒
+
+// 封面下载超时时间（毫秒）
+export const COVER_DOWNLOAD_TIMEOUT_MS = 30000; // 30秒
+
+// AntiGzip 处理超时时间（毫秒）
+export const ANTI_GZIP_TIMEOUT_MS = 10000; // 10秒

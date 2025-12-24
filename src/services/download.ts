@@ -1,6 +1,6 @@
 import { Config } from '../config'
 import { logger, sleep } from '../utils'
-import { IMAGE_HOST_PRIMARY, imageExtMap } from '../constants'
+import { IMAGE_HOST_PRIMARY, imageExtMap, POLLING_INTERVAL_MS, PROGRESS_UPDATE_INTERVAL_MS } from '../constants'
 import { Processor, DownloadedImage } from '../processor'
 import type { Gallery } from '../types'
 import { ApiService } from './api'
@@ -19,7 +19,7 @@ interface CachedDownloadedImage extends DownloadedImage {
 
 function createThrottledProgressUpdate(
   onProgress: (status: string) => Promise<void>,
-  intervalMs: number = 1500,
+  intervalMs: number = PROGRESS_UPDATE_INTERVAL_MS,
 ) {
   let lastProgressUpdate = 0
   return async (downloaded: number, processed: number, total: number) => {
@@ -106,7 +106,7 @@ export class StreamProcessor {
             failedIndexes.push(item.index)
           }
         } catch (error) {
-          logger.error(`下载图片 ${item.index + 1} 时出错: ${error.message}`)
+          logger.error(`下载图片失败 [galleryId=${galleryId}, index=${item.index + 1}, url=${item.url}]: ${error.message}`, error)
           failedIndexes.push(item.index)
           processedCount++
         }
@@ -117,7 +117,7 @@ export class StreamProcessor {
 
     while (nextExpectedIndex < imageUrls.length) {
       while (!downloadedImages.has(nextExpectedIndex)) {
-        await sleep(50)
+        await sleep(POLLING_INTERVAL_MS)
 
         const allWorkersFinished = (await Promise.allSettled(workerPromises)).every(
           (p) => p.status === 'fulfilled',
@@ -200,7 +200,7 @@ export class StreamProcessor {
             processedBuffer.set(result.index, cachedImage)
           }
         } catch (error) {
-          logger.warn(`下载图片 ${item.index + 1} 失败: ${error.message}`)
+          logger.warn(`下载图片失败 [galleryId=${galleryId}, index=${item.index + 1}]: ${error.message}`)
         }
       }
     }
@@ -227,10 +227,10 @@ export class StreamProcessor {
         nextYieldIndex++
         yielded++
       } else {
-        await sleep(50)
+        await sleep(POLLING_INTERVAL_MS)
         // 检查是否所有工作都已完成但仍有缺失的图片
         if (allDownloaded && yielded < imageUrls.length && !processedBuffer.has(nextYieldIndex)) {
-          logger.warn(`跳过未能下载的图片 ${nextYieldIndex + 1}`)
+          logger.warn(`跳过未能下载的图片 [galleryId=${galleryId}, index=${nextYieldIndex + 1}]`)
           nextYieldIndex++
           yielded++
         }

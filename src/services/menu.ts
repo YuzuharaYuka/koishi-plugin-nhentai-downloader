@@ -4,12 +4,13 @@ import { Gallery } from '../types'
 import { NhentaiService } from './nhentai'
 import { MenuGenerator } from './menu-generator'
 import { logger } from '../utils'
+import { MENU_EXPIRE_TIME_MS, MENU_CLEANUP_INTERVAL_MS } from '../constants'
 
 // 菜单交互服务，用于管理图片菜单的生成和用户交互
 export class MenuService {
   private menuGenerator: MenuGenerator
   private activeMenus: Map<string, { galleries: Partial<Gallery>[], timestamp: number }> = new Map()
-  private readonly MENU_EXPIRE_TIME = 5 * 60 * 1000 // 5分钟过期
+  private readonly MENU_EXPIRE_TIME = MENU_EXPIRE_TIME_MS
   private cleanupTimer: NodeJS.Timeout | null = null
 
   constructor(private config: Config, private nhentaiService: NhentaiService) {
@@ -18,7 +19,7 @@ export class MenuService {
       maxRows: config.menuMode.maxRows,
     })
     // 定期清理过期的菜单
-    this.cleanupTimer = setInterval(() => this.cleanupExpiredMenus(), 60000)
+    this.cleanupTimer = setInterval(() => this.cleanupExpiredMenus(), MENU_CLEANUP_INTERVAL_MS)
   }
 
   // 生成并发送搜索结果图片菜单
@@ -157,7 +158,7 @@ export class MenuService {
     this.activeMenus.clear()
     this.menuGenerator.dispose()
     if (this.config.debug) {
-      logger.info('菜单服务已清理')
+      logger.info('菜单服务已释放')
     }
   }
 }
