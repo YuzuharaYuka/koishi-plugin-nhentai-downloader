@@ -219,9 +219,14 @@ async function handlePagination(
       }
     }
 
-    await displayHandler(displayedResults, startIndex, initialResult.num_pages * initialResult.per_page)
+    // 计算实际的总结果数：只有1页时使用实际数量，多页时使用估算值
+    const totalResults = initialResult.num_pages === 1
+      ? initialResult.result.length
+      : initialResult.num_pages * initialResult.per_page
 
-    const totalResults = initialResult.num_pages * initialResult.per_page, totalDisplayPages = Math.ceil(totalResults / limit), actualEndIndex = Math.min(endIndex, state.allResults.length)
+    await displayHandler(displayedResults, startIndex, totalResults)
+
+    const totalDisplayPages = Math.ceil(totalResults / limit), actualEndIndex = Math.min(endIndex, state.allResults.length)
     await session.send(buildPromptMessage(
       state.currentDisplayPage,
       totalDisplayPages,
