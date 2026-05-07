@@ -1,4 +1,4 @@
-import { Gallery } from '../types'
+import { Gallery, MenuGallery } from '../types'
 import { Config } from '../config'
 import { logger } from '../utils'
 import { IMAGE_LOAD_TIMEOUT_MS } from '../constants'
@@ -111,7 +111,8 @@ export class MenuGenerator {
     } catch (error) {
       this.fontLoaded = true // 避免重复尝试
       if (this.config.debug) {
-        logger.error(`字体检测失败: ${error.message}，将使用系统默认字体`)
+        const err = error instanceof Error ? error : new Error(String(error))
+        logger.error(`字体检测失败: ${err.message}，将使用系统默认字体`)
       }
     }
   }
@@ -273,7 +274,7 @@ export class MenuGenerator {
   // 绘制单个画廊卡片
   private async drawGalleryCard(
     ctx: any,
-    gallery: Partial<Gallery>,
+    gallery: MenuGallery,
     thumbnail: Buffer,
     index: number,
     x: number,
@@ -414,7 +415,8 @@ export class MenuGenerator {
 
       } catch (error) {
         // 缩略图加载失败显示占位符
-        logger.error(`加载缩略图失败 (索引 ${index}, 大小: ${thumbnail.length} bytes): ${error.message}`)
+        const err = error instanceof Error ? error : new Error(String(error))
+        logger.error(`加载缩略图失败 (索引 ${index}, 大小: ${thumbnail.length} bytes): ${err.message}`)
         ctx.fillStyle = CARD_STYLES.placeholderBg
         ctx.save()
         this.drawRoundedRect(ctx, x, y, thumbWidth, thumbHeight, CARD_STYLES.cardRadius)
@@ -452,7 +454,24 @@ export class MenuGenerator {
     ctx.textAlign = 'left'
     ctx.textBaseline = 'top'
 
-    const title = gallery.title?.pretty || gallery.title?.english || `ID ${gallery.id}`
+    // 处理 MenuGallery 的两种结构
+    const isSearchGallery = typeof (gallery as any).thumbnail === 'string'
+    let title: string
+    let pages: string | number
+    let fav: string
+
+    if (isSearchGallery) {
+      const sg = gallery as any
+      title = sg.english_title || sg.japanese_title || `ID ${sg.id}`
+      pages = sg.num_pages || '?'
+      fav = '?'
+    } else {
+      const fg = gallery as any
+      title = fg.title?.pretty || fg.title?.english || `ID ${fg.id}`
+      pages = fg.num_pages || '?'
+      fav = this.formatCount(fg.num_favorites || 0)
+    }
+
     const { firstLine, secondLine } = this.splitLongTitle(ctx, title, thumbWidth - 24)
     ctx.fillText(firstLine, x + 12, infoY + 12)
     if (secondLine) {
@@ -469,55 +488,56 @@ export class MenuGenerator {
     ctx.fillStyle = CARD_STYLES.infoColor
     ctx.textAlign = 'left'
 
-    const id = gallery.id
-    const pages = gallery.num_pages || '?'
-    const fav = this.formatCount(gallery.num_favorites || 0)
+    const id = isSearchGallery ? (gallery as any).id : (gallery as any).id
+    const favFormatted = fav
 
-    let infoText = `ID: ${id} · ${pages}P · ♥ ${fav}`
+    let infoText = `ID: ${id} · ${pages}P · ♥ ${favFormatted}`
 
     // 检查宽度，如果溢出则进一步压缩
     if (ctx.measureText(infoText).width > thumbWidth - 24) {
-       infoText = `${id} · ${pages}P · ♥${fav}`
+       infoText = `${id} · ${pages}P · ♥${favFormatted}`
     }
 
     ctx.fillText(infoText, x + 12, infoLineY)
 
-    // 绘制标签行
-    const tagY = infoLineY + metaFontSize + 12
-    let currentX = x + 12
+    // 绘制标签行 (仅对 Gallery 显示标签)
+    if (!isSearchGallery) {
+      const tagY = infoLineY + metaFontSize + 12
+      let currentX = x + 12
 
-    // 1. 语言标签
-    const languages = gallery.tags?.filter(tag => tag.type === 'language').map(tag => tag.name) || []
-    const langText = this.getLanguageTagText(languages)
-    if (langText) {
-      currentX += this.drawTag(ctx, langText, currentX, tagY, CARD_STYLES.langBg, CARD_STYLES.langText) + 8
-    }
+      // 1. 语言标签
+      const languages = (gallery as any).tags?.filter((tag: any) => tag.type === 'language').map((tag: any) => tag.name) || []
+      const langText = this.getLanguageTagText(languages)
+      if (langText) {
+        currentX += this.drawTag(ctx, langText, currentX, tagY, CARD_STYLES.langBg, CARD_STYLES.langText) + 8
+      }
 
-    // 2. 重要标签 (Parody / Artist)
-    const importantTags = this.getImportantTags(gallery)
-    const fontSize = this.options.infoFontSize - 4
-    ctx.font = `${fontSize}px Arial, sans-serif`
-    const paddingX = 10
+      // 2. 重要标签 (Parody / Artist)
+      const importantTags = this.getImportantTags(gallery as any)
+      const fontSize = this.options.infoFontSize - 4
+      ctx.font = `${fontSize}px Arial, sans-serif`
+      const paddingX = 10
 
-    for (const tag of importantTags) {
-      // 截断过长的标签
-      let displayTag = tag
-      if (displayTag.length > 14) displayTag = displayTag.substring(0, 13) + '...'
+      for (const tag of importantTags) {
+        // 截断过长的标签
+        let displayTag = tag
+        if (displayTag.length > 14) displayTag = displayTag.substring(0, 13) + '...'
 
-      // 预计算标签宽度
-      const textMetrics = ctx.measureText(displayTag)
-      const tagWidth = textMetrics.width + paddingX * 2
+        // 预计算标签宽度
+        const textMetrics = ctx.measureText(displayTag)
+        const tagWidth = textMetrics.width + paddingX * 2
 
-      // 检查是否超出宽度 (保留 4px 右边距)
-      if (currentX + tagWidth > x + thumbWidth - 4) break
+        // 检查是否超出宽度 (保留 4px 右边距)
+        if (currentX + tagWidth > x + thumbWidth - 4) break
 
-      currentX += this.drawTag(ctx, displayTag, currentX, tagY, CARD_STYLES.tagBg, CARD_STYLES.tagText) + 8
+        currentX += this.drawTag(ctx, displayTag, currentX, tagY, CARD_STYLES.tagBg, CARD_STYLES.tagText) + 8
+      }
     }
   }
 
   // 生成搜索结果菜单图片
   async generateMenu(
-    galleries: Partial<Gallery>[],
+    galleries: MenuGallery[],
     thumbnails: Buffer[],
     totalResults?: number,
     startIndex?: number
@@ -626,7 +646,7 @@ export class MenuGenerator {
 
       await new Promise<void>((resolve, reject) => {
         img.onload = () => resolve()
-        img.onerror = (err) => reject(new Error('Image load failed'))
+        img.onerror = (_: Event) => reject(new Error('Image load failed'))
       })
       imgAspect = img.width / img.height
     } catch (error) {

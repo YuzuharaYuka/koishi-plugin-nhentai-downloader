@@ -1,6 +1,6 @@
 import { Config } from '../config'
 import { logger, sleep } from '../utils'
-import { IMAGE_HOST_PRIMARY, imageExtMap, POLLING_INTERVAL_MS, PROGRESS_UPDATE_INTERVAL_MS } from '../constants'
+import { DEFAULT_IMAGE_CDN, DEFAULT_THUMB_CDN, POLLING_INTERVAL_MS, PROGRESS_UPDATE_INTERVAL_MS } from '../constants'
 import { Processor, DownloadedImage } from '../processor'
 import type { Gallery } from '../types'
 import { ApiService } from './api'
@@ -11,7 +11,7 @@ interface ImageUrl {
   index: number
 }
 
-// 扩展的下载图片类型，用于缓存处理结果
+// 下载图片与缓存
 interface CachedDownloadedImage extends DownloadedImage {
   processedBuffer?: Buffer // 缓存的处理后缓冲区
   finalFormat?: string // 最终格式
@@ -37,27 +37,69 @@ function handleDownloadError(error: Error, operationType: string): { error: stri
 }
 
 export class StreamProcessor {
+  private cdnHost: string = DEFAULT_IMAGE_CDN
+  private cdnServers: { image: string[]; thumb: string[] } = { image: [DEFAULT_IMAGE_CDN], thumb: [DEFAULT_THUMB_CDN] }
+  private failedCdnServers: Set<string> = new Set() // 记录失败的 CDN 服务器
+
   constructor(
     private config: Config,
     private apiService: ApiService,
     private processor: Processor,
   ) {}
 
-  private lastFailedIndexes: number[] = [] // 存储最后一次流生成的失败索引
+  private lastFailedIndexes: number[] = []
 
-  generateImageUrls(gallery: Gallery): ImageUrl[] {
+  // 生成图片 URL
+  async generateImageUrls(gallery: Gallery): Promise<ImageUrl[]> {
+    this.cdnServers = await this.apiService.getCdnServers()
+    this.cdnHost = this.cdnServers.image[0] || DEFAULT_IMAGE_CDN
+
     return gallery.images.pages.map((p, i) => ({
-      url: `https://${IMAGE_HOST_PRIMARY}/galleries/${gallery.media_id}/${i + 1}.${imageExtMap[p.t] || 'jpg'}`,
+      url: `https://${this.cdnHost}/${p.path}`,
       index: i,
     }))
   }
 
-  // 获取最后一次下载的失败索引
+  /**
+   * 获取可用的 CDN 服务器（排除失败的）
+   */
+  private getAvailableCdnServer(serverList?: string[]): string {
+    const servers = serverList || this.cdnServers.image
+    // 优先使用没有失败过的服务器
+    const available = servers.find(host => !this.failedCdnServers.has(host))
+    if (available) {
+      return available
+    }
+
+    // 如果全部失败过，重置失败记录并使用第一个
+    if (this.failedCdnServers.size === servers.length) {
+      this.failedCdnServers.clear()
+    }
+
+    return servers[0] || DEFAULT_IMAGE_CDN
+  }
+
+  /**
+   * 记录 CDN 服务器失败
+   */
+  private recordCdnFailure(url: string): void {
+    try {
+      const urlObj = new URL(url)
+      const host = urlObj.hostname
+      if (host) {
+        this.failedCdnServers.add(host)
+        logger.warn(`CDN 服务器 ${host} 标记为失败，将尝试其他服务器`)
+      }
+    } catch (e) {
+      // 无法解析 URL，跳过
+    }
+  }
+
   getLastFailedIndexes(): number[] {
     return this.lastFailedIndexes
   }
 
-  // 处理下载的图片，应用 antiGzip 并返回处理后的结果
+  // 处理下载图片
   private async processDownloadedImage(result: DownloadedImage, galleryId: string): Promise<DownloadedImage> {
     const processed = await this.processor.applyAntiGzip(result.buffer, `${galleryId}-page-${result.index + 1}`)
     return {
@@ -73,6 +115,8 @@ export class StreamProcessor {
     imageUrls: ImageUrl[],
     onProgress?: (processed: number, total: number) => Promise<void>,
   ): AsyncGenerator<DownloadedImage> {
+    if (!this.apiService.imageGot) throw new Error('图片下载器未初始化')
+
     const failedIndexes: number[] = []
     const imageQueue = [...imageUrls]
     const downloadedImages = new Map<number, DownloadedImage>()
@@ -86,6 +130,7 @@ export class StreamProcessor {
         if (!item) continue
 
         try {
+          if (!this.apiService.imageGot) throw new Error('imageGot 服务未初始化')
           const result = await this.processor.downloadImage(
             this.apiService.imageGot,
             item.url,
@@ -105,7 +150,7 @@ export class StreamProcessor {
           } else {
             failedIndexes.push(item.index)
           }
-        } catch (error) {
+        } catch (error: any) {
           logger.error(`下载图片失败 [galleryId=${galleryId}, index=${item.index + 1}, url=${item.url}]: ${error.message}`, error)
           failedIndexes.push(item.index)
           processedCount++
@@ -152,6 +197,8 @@ export class StreamProcessor {
     imageUrls: ImageUrl[],
     onProgress?: (downloaded: number, processed: number, total: number) => Promise<void>,
   ): AsyncGenerator<DownloadedImage> {
+    if (!this.apiService.imageGot) throw new Error('图片下载器未初始化')
+
     const downloadQueue = [...imageUrls]
     const processedBuffer = new Map<number, CachedDownloadedImage>()
 
@@ -169,6 +216,7 @@ export class StreamProcessor {
         if (!item) continue
 
         try {
+          if (!this.apiService.imageGot) throw new Error('imageGot 服务未初始化')
           const result = await this.processor.downloadImage(
             this.apiService.imageGot,
             item.url,
@@ -199,7 +247,7 @@ export class StreamProcessor {
             }
             processedBuffer.set(result.index, cachedImage)
           }
-        } catch (error) {
+        } catch (error: any) {
           logger.warn(`下载图片失败 [galleryId=${galleryId}, index=${item.index + 1}]: ${error.message}`)
         }
       }
@@ -263,7 +311,7 @@ export class DownloadManager {
       return { error: `获取画廊 ${id} 信息失败，请检查ID或链接是否正确。` }
     }
 
-    const imageUrls = this.streamProcessor.generateImageUrls(gallery)
+    const imageUrls = await this.streamProcessor.generateImageUrls(gallery)
     await onProgress(`画廊信息获取成功，共 ${imageUrls.length} 页图片。`)
 
     const baseFilename = this.generateFilename(gallery, id)
@@ -332,7 +380,7 @@ export class DownloadManager {
         filename,
         failedIndexes: this.streamProcessor.getLastFailedIndexes(), // 从streamProcessor中获取失败索引
       }
-    } catch (error) {
+    } catch (error: any) {
       return handleDownloadError(error, '下载图片')
     } finally {
       this.apiService.clearSessionToken(galleryId)
@@ -385,7 +433,7 @@ export class DownloadManager {
             const { unlink } = await import('fs/promises')
             await unlink(pdfPath)
             if (this.config.debug) logger.info(`临时 PDF 已删除: ${pdfPath}`)
-          } catch (err) {
+          } catch (err: any) {
             if (this.config.debug) logger.warn(`删除临时 PDF 失败: ${err.message}`)
           }
           return {
@@ -403,7 +451,7 @@ export class DownloadManager {
         filename: `${filename}.pdf`,
         isTemporary: true,
       }
-    } catch (error) {
+    } catch (error: any) {
       return handleDownloadError(error, '生成 PDF')
     } finally {
       this.apiService.clearSessionToken(galleryId)
@@ -439,7 +487,7 @@ export class DownloadManager {
         buffer: zipBuffer,
         filename: `${filename}.zip`,
       }
-    } catch (error) {
+    } catch (error: any) {
       return handleDownloadError(error, '生成 ZIP')
     } finally {
       this.apiService.clearSessionToken(galleryId)

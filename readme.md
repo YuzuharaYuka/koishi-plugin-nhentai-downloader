@@ -188,6 +188,11 @@ nh.download https://nhentai.net/g/608023/ -p -k password
 - 网络要求: 需要能够访问 `nhentai.net` 及其图片源站，网络受限时请配置代理
 - 版权声明: 本插件仅供学习交流使用，请勿用于商业用途，请尊重原作者版权
 
+## 待办
+
+1. 更新下载方式，支持zip、cbz下载
+2. 更新搜索功能，支持过滤、标签搜索
+
 ## 许可证
 
 [MIT](./LICENSE) License © 2024

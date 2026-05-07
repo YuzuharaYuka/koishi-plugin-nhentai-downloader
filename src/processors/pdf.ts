@@ -141,7 +141,8 @@ export async function createPdf(
               valign: 'center',
             })
           } catch (imgError) {
-            logger.warn(`[Processor] 跳过处理失败的图片 ${image.index + 1}: ${imgError.message}`)
+            const err = imgError instanceof Error ? imgError : new Error(String(imgError))
+            logger.warn(`[Processor] 跳过处理失败的图片 ${image.index + 1}: ${err.message}`)
             if (config.debug) onProgress(`处理第 ${pageCount} 张图片失败，已跳过。`)
           }
 
@@ -186,17 +187,17 @@ export async function createPdf(
             onProgress(`✓ PDF 生成完成！${password ? '（已用密码加密）' : ''}`)
             resolve(tempPdfPath)
           } catch (error) {
-            await cleanup(error)
+            await cleanup(error instanceof Error ? error : new Error(String(error)))
           }
         })
 
-        writeStream.on('error', (err) => cleanup(err))
-        doc.on('error', (err) => cleanup(err))
+        writeStream.on('error', (err: Error) => cleanup(err))
+        doc.on('error', (err: Error) => cleanup(err))
 
         doc.pipe(writeStream)
         doc.end()
       } catch (error) {
-        await cleanup(error)
+        await cleanup(error instanceof Error ? error : new Error(String(error)))
       }
     })
   } catch (error) {

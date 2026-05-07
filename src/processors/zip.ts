@@ -11,8 +11,8 @@ let isArchiverInitialized = false
 async function ensureArchiverInitialized() {
   if (!isArchiverInitialized) {
     try {
-      archiverModule = await import('archiver')
-      const archiverZipEncrypted = await import('archiver-zip-encrypted')
+      archiverModule = await import('archiver' as any)
+      const archiverZipEncrypted = await import('archiver-zip-encrypted' as any)
       // 注册加密 ZIP 格式（仅在未注册时注册，避免热重载时重复注册）
       try {
         archiverModule.default.registerFormat('zip-encrypted', archiverZipEncrypted.default)

@@ -126,8 +126,8 @@ class CanvasImageProcessor {
       ctx.drawImage(img, 0, 0)
 
       return canvas.encode('jpeg', finalQuality)
-    } catch (error) {
-      throw new Error(`Failed to convert to JPEG: ${error.message}`)
+    } catch (error: any) {
+      throw new Error(`Failed to convert to JPEG: ${error?.message || String(error)}`)
     }
   }
 
@@ -160,8 +160,8 @@ class CanvasImageProcessor {
       ctx.drawImage(img, 0, 0)
 
       return canvas.encode('png')
-    } catch (error) {
-      throw new Error(`Failed to convert to PNG: ${error.message}`)
+    } catch (error: any) {
+      throw new Error(`Failed to convert to PNG: ${error?.message || String(error)}`)
     }
   }
 
@@ -190,8 +190,8 @@ class CanvasImageProcessor {
         img.onerror = reject
       })
       return { width: img.width, height: img.height }
-    } catch (error) {
-      throw new Error(`Failed to get dimensions: ${error.message}`)
+    } catch (error: any) {
+      throw new Error(`Failed to get dimensions: ${error?.message || String(error)}`)
     }
   }
 
@@ -253,8 +253,8 @@ class CanvasImageProcessor {
 
       // 输出为 JPEG 格式
       return canvas.encode('jpeg', 90)
-    } catch (error) {
-      throw new Error(`Failed to apply anti-censorship JPEG: ${error.message}`)
+    } catch (error: any) {
+      throw new Error(`Failed to apply anti-censorship JPEG: ${error?.message || String(error)}`)
     }
   }
 
@@ -326,8 +326,8 @@ class CanvasImageProcessor {
         default:
           return canvas.encode('webp', quality)
       }
-    } catch (error) {
-      throw new Error(`Failed to apply anti-censorship: ${error.message}`)
+    } catch (error: any) {
+      throw new Error(`Failed to apply anti-censorship: ${error?.message || String(error)}`)
     }
   }
 

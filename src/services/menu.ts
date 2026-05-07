@@ -1,15 +1,15 @@
 import { Session, h } from 'koishi'
 import { Config } from '../config'
-import { Gallery } from '../types'
+import { Gallery, MenuGallery } from '../types'
 import { NhentaiService } from './nhentai'
 import { MenuGenerator } from './menu-generator'
 import { logger } from '../utils'
 import { MENU_EXPIRE_TIME_MS, MENU_CLEANUP_INTERVAL_MS } from '../constants'
 
-// 菜单交互服务，用于管理图片菜单的生成和用户交互
+// 菜单服务
 export class MenuService {
   private menuGenerator: MenuGenerator
-  private activeMenus: Map<string, { galleries: Partial<Gallery>[], timestamp: number }> = new Map()
+  private activeMenus: Map<string, { galleries: MenuGallery[], timestamp: number }> = new Map()
   private readonly MENU_EXPIRE_TIME = MENU_EXPIRE_TIME_MS
   private cleanupTimer: NodeJS.Timeout | null = null
 
@@ -18,32 +18,27 @@ export class MenuService {
       columns: config.menuMode.columns,
       maxRows: config.menuMode.maxRows,
     })
-    // 定期清理过期的菜单
+    // 定期清理过期菜单
     this.cleanupTimer = setInterval(() => this.cleanupExpiredMenus(), MENU_CLEANUP_INTERVAL_MS)
   }
 
-  // 生成并发送搜索结果图片菜单
   async sendSearchMenu(
     session: Session,
-    galleries: Partial<Gallery>[],
+    galleries: MenuGallery[],
     totalResults?: number,
     startIndex?: number
-  ): Promise<Partial<Gallery>[]> {
+  ): Promise<MenuGallery[]> {
     try {
       const maxItems = this.config.menuMode.columns * this.config.menuMode.maxRows
       const displayGalleries = galleries.slice(0, maxItems)
 
-      // 图片菜单模式始终获取缩略图
       const covers = await this.nhentaiService.getCoversForGalleries(displayGalleries)
-      const thumbnails = displayGalleries.map(gallery => covers.get(gallery.id as string)?.buffer ?? Buffer.alloc(0))
+      const thumbnails = displayGalleries.map(gallery => covers.get(String(gallery.id))?.buffer ?? Buffer.alloc(0))
 
-      // 生成菜单图片
       const menuImage = await this.menuGenerator.generateMenu(displayGalleries, thumbnails, totalResults, startIndex)
 
-      // 发送菜单图片
       await session.send(h.image(menuImage, 'image/png'))
 
-      // 保存当前菜单到会话状态
       const menuKey = this.getMenuKey(session)
       this.activeMenus.set(menuKey, {
         galleries: displayGalleries,
@@ -55,28 +50,28 @@ export class MenuService {
       return displayGalleries
 
     } catch (error) {
-      logger.error(`生成搜索菜单失败: ${error.message}`)
-      throw error
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.error(`生成搜索菜单失败: ${err.message}`)
+      throw err
     }
   }
 
-  // 生成并发送单个画廊的详细信息菜单
+  // 发送画廊详情菜单
   async sendDetailMenu(session: Session, gallery: Gallery, coverBuffer: Buffer, showRefreshOption: boolean = false): Promise<void> {
     try {
-      // 生成菜单图片
       const menuImage = await this.menuGenerator.generateDetailMenu(gallery, coverBuffer, showRefreshOption)
 
-      // 发送菜单图片
       await session.send(h.image(menuImage, 'image/png'))
 
     } catch (error) {
-      logger.error(`生成详细菜单失败: ${error.message}`)
-      throw error
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.error(`生成详细菜单失败: ${err.message}`)
+      throw err
     }
   }
 
-  // 处理用户的菜单选择
-  async handleMenuSelection(session: Session, selection: string): Promise<Partial<Gallery> | null> {
+  // 处理菜单选择
+  async handleMenuSelection(session: Session, selection: string): Promise<MenuGallery | null> {
     const menuKey = this.getMenuKey(session)
     const menu = this.activeMenus.get(menuKey)
 
@@ -91,7 +86,7 @@ export class MenuService {
     const index = parseInt(selection, 10)
 
     if (index === 0) {
-      this.activeMenus.delete(menuKey) // 用户取消选择
+      this.activeMenus.delete(menuKey)
       return null
     }
 
@@ -100,31 +95,27 @@ export class MenuService {
     }
 
     const selectedGallery = menu.galleries[index - 1]
-    this.activeMenus.delete(menuKey) // 清除菜单状态
+    this.activeMenus.delete(menuKey)
     return selectedGallery
   }
 
-  // 检查会话是否有活跃的菜单
   hasActiveMenu(session: Session): boolean {
     const menuKey = this.getMenuKey(session)
     const menu = this.activeMenus.get(menuKey)
     return menu ? !this.isMenuExpired(menuKey, menu) : false
   }
 
-  // 清除会话的菜单状态
   clearMenu(session: Session): void {
     const menuKey = this.getMenuKey(session)
     this.activeMenus.delete(menuKey)
   }
 
-  // 获取菜单键（平台:群组ID:用户ID）
   private getMenuKey(session: Session): string {
     const channelId = session.guildId ?? session.userId
     return `${session.platform}:${channelId}:${session.userId}`
   }
 
-  // 检查菜单是否过期
-  private isMenuExpired(menuKey: string, menu: { galleries: Partial<Gallery>[], timestamp: number }): boolean {
+  private isMenuExpired(menuKey: string, menu: { galleries: MenuGallery[], timestamp: number }): boolean {
     if (Date.now() - menu.timestamp > this.MENU_EXPIRE_TIME) {
       this.activeMenus.delete(menuKey)
       return true
@@ -132,7 +123,6 @@ export class MenuService {
     return false
   }
 
-  // 清理过期的菜单
   private cleanupExpiredMenus(): void {
     const now = Date.now()
     let cleanedCount = 0

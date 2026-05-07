@@ -238,7 +238,8 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
       await fs.writeFile(this.indexFile, data, 'utf-8')
       this.indexDirty = false
     } catch (error) {
-      logger.warn(`保存索引失败: ${error.message}`)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.warn(`保存索引失败: ${err.message}`)
     }
   }
 
@@ -260,7 +261,8 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
       await fs.rm(this.cacheDir, { recursive: true, force: true })
       if (this.config.debug) logger.info(`${this.cacheDir} 已清理`)
     } catch (error) {
-      logger.warn(`清理缓存目录失败: ${error.message}`)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.warn(`清理缓存目录失败: ${err.message}`)
     }
   }
 
@@ -312,7 +314,8 @@ export class ImageCache extends BaseCache<CacheEntry> {
       await this.loadIndex()
       if (this.config.debug) logger.info(`图片缓存已初始化: ${this.cacheDir}`)
     } catch (error) {
-      logger.warn(`缓存初始化失败: ${error.message}`)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.warn(`缓存初始化失败: ${err.message}`)
     }
   }
 
@@ -341,7 +344,11 @@ export class ImageCache extends BaseCache<CacheEntry> {
       await this.saveIndex(validEntries)
       if (this.config.debug) logger.info(`加载 ${validEntries.length} 个图片缓存条目`)
     } catch (error) {
-      if (error.code !== 'ENOENT') logger.warn(`加载索引失败: ${error.message}`)
+      const err = error as any
+      if (err.code !== 'ENOENT') {
+        const errMsg = err instanceof Error ? err.message : String(error)
+        logger.warn(`加载索引失败: ${errMsg}`)
+      }
       this.entries.clear()
     }
   }
@@ -417,7 +424,8 @@ export class ImageCache extends BaseCache<CacheEntry> {
       this.scheduleSaveIndex()
       if (this.config.debug) logger.debug(`缓存已保存: ${key}`)
     } catch (error) {
-      logger.warn(`保存缓存失败: ${error.message}`)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.warn(`保存缓存失败: ${err.message}`)
     }
   }
 
@@ -476,7 +484,8 @@ export class ImageCache extends BaseCache<CacheEntry> {
       this.scheduleSaveIndex()
       if (this.config.debug) logger.debug(`处理缓存已保存: ${key}`)
     } catch (error) {
-      logger.warn(`保存处理缓存失败: ${error.message}`)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.warn(`保存处理缓存失败: ${err.message}`)
     }
   }
 
@@ -558,7 +567,8 @@ export class PdfCache extends BaseCache<PdfCacheEntry> {
       await this.loadIndex()
       if (this.config.debug) logger.info(`PDF 缓存已初始化: ${this.cacheDir}`)
     } catch (error) {
-      logger.warn(`PDF 缓存初始化失败: ${error.message}`)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.warn(`PDF 缓存初始化失败: ${err.message}`)
     }
   }
 
@@ -589,7 +599,11 @@ export class PdfCache extends BaseCache<PdfCacheEntry> {
       await this.saveIndex(validEntries)
       if (this.config.debug) logger.info(`加载 ${validEntries.length} 个 PDF 缓存条目`)
     } catch (error) {
-      if (error.code !== 'ENOENT') logger.warn(`加载 PDF 索引失败: ${error.message}`)
+      const err = error as any
+      if (err.code !== 'ENOENT') {
+        const errMsg = err instanceof Error ? err.message : String(error)
+        logger.warn(`加载 PDF 索引失败: ${errMsg}`)
+      }
       this.entries.clear()
     }
   }
@@ -668,7 +682,8 @@ export class PdfCache extends BaseCache<PdfCacheEntry> {
       if (this.config.debug) logger.info(`PDF 已缓存: ${galleryId} (${(stat.size / 1024 / 1024).toFixed(2)} MB)`)
       return filePath
     } catch (error) {
-      logger.warn(`保存 PDF 缓存失败: ${error.message}`)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.warn(`保存 PDF 缓存失败: ${err.message}`)
       return null
     }
   }

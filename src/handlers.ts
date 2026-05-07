@@ -1,7 +1,7 @@
 import { Session, h } from 'koishi'
 import { Config } from './config'
-import { logger, bufferToDataURI, sleep } from './utils'
-import { Gallery, SearchResult, Tag } from './types'
+import { logger, bufferToDataURI, sleep, getErrorMessage } from './utils'
+import { Gallery, SearchResult, Tag, MenuGallery } from './types'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
@@ -17,7 +17,7 @@ export interface DownloadOptions {
 }
 
 export interface SearchOptions {
-  sort?: 'popular' | 'popular-today' | 'popular-week'
+  sort?: 'popular'
   lang?: 'chinese' | 'japanese' | 'english' | 'all'
 }
 
@@ -29,13 +29,13 @@ export interface SearchHandlerOptions {
 }
 
 export const tagTypeDisplayMap: Record<Tag['type'], string> = {
-  parody: '🎭 原作',
-  character: '👥 角色',
-  artist: '👤 作者',
-  group: '🏢 社团',
-  language: '🌐 语言',
-  category: '📚 分类',
-  tag: '🏷️ 标签',
+  parody: '原作',
+  character: '角色',
+  artist: '作者',
+  group: '社团',
+  language: '语言',
+  category: '分类',
+  tag: '标签',
 }
 
 async function sendWithOptionalForward(
@@ -53,8 +53,14 @@ async function sendWithOptionalForward(
   }
 }
 
+// 检查画廊是否被屏蔽
+export function isGalleryBlacklisted(gallery: MenuGallery): boolean {
+  const searchGallery = gallery as any
+  return searchGallery.blacklisted === true
+}
+
 export function formatGalleryInfo(
-  gallery: Partial<Gallery>,
+  gallery: MenuGallery,
   displayIndex?: number,
   options: {
     showTags?: boolean
@@ -64,32 +70,51 @@ export function formatGalleryInfo(
   const { showTags = true, showLink = true } = options
   const infoLines: string[] = []
 
+  const isSearchGallery = typeof (gallery as any).thumbnail === 'string'
+
   let title = '📘 '
   if (typeof displayIndex === 'number') title += `【${displayIndex + 1}】 `
-  title += gallery.title?.pretty || gallery.title?.english || gallery.title?.japanese || 'N/A'
+
+  if (isSearchGallery) {
+    const sg = gallery as any
+    title += sg.english_title || sg.japanese_title || `ID ${sg.id}`
+  } else {
+    const fg = gallery as any
+    title += fg.title?.pretty || fg.title?.english || fg.title?.japanese || 'N/A'
+  }
   infoLines.push(title)
 
   infoLines.push(`🆔 ID: ${gallery.id || 'N/A'}`)
-  infoLines.push(`📄 页数: ${gallery.num_pages || 'N/A'}`)
-  infoLines.push(`⭐ 收藏: ${gallery.num_favorites || 'N/A'}`)
-  if (gallery.upload_date) {
-    infoLines.push(`📅 上传于: ${new Date(gallery.upload_date * 1000).toLocaleDateString('zh-CN')}`)
+
+  // 仅 Gallery 才有这些信息
+  if (!isSearchGallery) {
+    const fg = gallery as any
+    infoLines.push(`页数: ${fg.num_pages || 'N/A'}`)
+    infoLines.push(`收藏: ${fg.num_favorites || 'N/A'}`)
+    if (fg.upload_date) {
+      infoLines.push(`上传于: ${new Date(fg.upload_date * 1000).toLocaleDateString('zh-CN')}`)
+    }
+  } else {
+    const sg = gallery as any
+    infoLines.push(`页数: ${sg.num_pages || 'N/A'}`)
   }
 
-  const tagsByType = (gallery.tags || []).reduce((acc, tag) => {
-    if (!acc[tag.type]) acc[tag.type] = []
-    acc[tag.type].push(tag.name)
-    return acc
-  }, {} as Record<Tag['type'], string[]>)
+  // 仅 Gallery 才有标签
+  if (!isSearchGallery && showTags) {
+    const fg = gallery as any
+    const tagsByType = (fg.tags || []).reduce((acc: any, tag: any) => {
+      if (!acc[tag.type]) acc[tag.type] = []
+      acc[tag.type].push(tag.name)
+      return acc
+    }, {} as Record<any, string[]>)
 
-  if (showTags) {
     for (const type in tagTypeDisplayMap) {
-      const key = type as Tag['type']
+      const key = type as keyof typeof tagTypeDisplayMap
       if (tagsByType[key]) {
-        let names = tagsByType[key]
+        let names = tagsByType[key] as string[]
 
         if (key === 'language') {
-          names = names.map(name => name.replace(/\b\w/g, l => l.toUpperCase()))
+          names = names.map((name: string) => name.replace(/\b\w/g, (l: string) => l.toUpperCase()))
         } else if (key === 'tag' && names.length > TAG_DISPLAY_LIMIT) {
           names = [...names.slice(0, TAG_DISPLAY_LIMIT), '...']
         }
@@ -100,7 +125,7 @@ export function formatGalleryInfo(
   }
 
   if (showLink && gallery.id) {
-    infoLines.push(`🔗 链接: https://nhentai.net/g/${gallery.id}/`)
+    infoLines.push(`链接: https://nhentai.net/g/${gallery.id}/`)
   }
 
   return h('p', infoLines.join('\n'))
@@ -118,17 +143,22 @@ export function buildSearchQuery(
   return result || 'pages:>0'
 }
 
-// 分页管理器：处理搜索结果的分页逻辑
+// 分页状态
 interface PaginationState {
-  allResults: Partial<Gallery>[]
+  allResults: MenuGallery[]
   totalApiPages: number
   fetchedApiPage: number
   currentDisplayPage: number
 }
 
 function createPaginationState(initialResult: SearchResult): PaginationState {
+  // 过滤被屏蔽的画廊
+  const filteredResults = initialResult.result.filter((g) => !isGalleryBlacklisted(g))
+  if (filteredResults.length < initialResult.result.length) {
+    logger.info(`已过滤 ${initialResult.result.length - filteredResults.length} 个被屏蔽的画廊`)
+  }
   return {
-    allResults: initialResult.result,
+    allResults: filteredResults as MenuGallery[],
     totalApiPages: initialResult.num_pages,
     fetchedApiPage: 1,
     currentDisplayPage: 1,
@@ -144,7 +174,12 @@ async function fetchMoreResults(
   const result = await apiService.searchGalleries(effectiveQuery, state.fetchedApiPage + 1, sort)
   if (!result) return false
   if (!result.result || result.result.length === 0) return false
-  state.allResults.push(...result.result)
+  // 过滤已被屏蔽的画廊
+  const filteredResults = result.result.filter((g) => !isGalleryBlacklisted(g))
+  if (filteredResults.length < result.result.length) {
+    logger.debug(`已过滤 ${result.result.length - filteredResults.length} 个被屏蔽的画廊`)
+  }
+  state.allResults.push(...(filteredResults as MenuGallery[]))
   if (result.num_pages > state.totalApiPages) state.totalApiPages = result.num_pages
   state.fetchedApiPage++
   return true
@@ -175,7 +210,7 @@ async function handlePagination(
   apiService: ApiService,
   config: Config,
   displayHandler: (
-    displayedResults: Partial<Gallery>[],
+    displayedResults: MenuGallery[],
     startIndex: number,
     totalResults: number
   ) => Promise<void>,
@@ -259,7 +294,7 @@ async function handlePagination(
 async function handleUserInput(
   reply: string,
   state: PaginationState,
-  displayedResults: Partial<Gallery>[],
+  displayedResults: MenuGallery[],
   totalDisplayPages: number,
   session: Session,
   onDownload: (galleryId: string) => Promise<void>,
@@ -286,7 +321,7 @@ async function handleUserInput(
     if (selectedIndex >= 0 && selectedIndex < displayedResults.length) {
       const gallery = displayedResults[selectedIndex]
       if (gallery?.id) {
-        await onDownload(gallery.id)
+        await onDownload(String(gallery.id))
         return 'break'
       }
     }
@@ -325,7 +360,7 @@ export async function handleRandomWithInteraction(
 
         try {
           await menuService.sendDetailMenu(session, gallery, coverBuffer, true)
-          await session.send('是否下载? [Y]下载 [F]换一个 [N]退出')
+          await session.send('[Y]下载 [F]换一个 [N]退出')
 
           const reply = await session.prompt(config.promptTimeout * 1000)
           if (!reply) {
@@ -352,8 +387,8 @@ export async function handleRandomWithInteraction(
             await session.send('无效输入，操作已取消。')
             break
           }
-        } catch (error) {
-          logger.error(`详细菜单处理失败: ${error.message}`)
+        } catch (error: any) {
+          logger.error(`详细菜单处理失败: ${getErrorMessage(error)}`)
           await session.send('菜单生成失败，将使用传统模式显示结果。')
           // 切换到文本模式
           await handleRandomWithTextMode(session, randomId, nhentaiService, config)
@@ -364,7 +399,7 @@ export async function handleRandomWithInteraction(
         await handleRandomWithTextMode(session, randomId, nhentaiService, config)
         break
       }
-    } catch (error) {
+    } catch (error: any) {
       logger.error(`[随机] 处理失败: %o`, error)
       await session.send('操作失败，请稍后重试。')
       break
@@ -393,7 +428,7 @@ async function handleRandomWithTextMode(
       showLink: config.textMode.showLink,
     })
     const messageContent = h('message', {}, galleryNode)
-    if (cover && config.textMode.showThumbnails) {
+    if (cover && cover.buffer && config.textMode.showThumbnails) {
       messageContent.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
     }
 
@@ -404,7 +439,7 @@ async function handleRandomWithTextMode(
       FORWARD_SUPPORTED_PLATFORMS,
     )
 
-    await session.send('是否下载? [Y]下载 [F]换一个 [N]退出')
+    await session.send('[Y]下载 [F]换一个 [N]退出')
     const reply = await session.prompt(config.promptTimeout * 1000)
 
     if (!reply) {
@@ -465,8 +500,8 @@ export async function handleIdSearchWithMenu(
        await session.send('无效输入，操作已取消。')
     }
 
-  } catch (error) {
-    logger.error(`详细菜单处理失败: ${error.message}`)
+  } catch (error: any) {
+    logger.error(`详细菜单处理失败: ${getErrorMessage(error)}`)
     await session.send('菜单生成失败，将使用传统模式显示结果。')
     await handleIdSearch(session, id, nhentaiService, config, {
       useForward: config.textMode.useForward,
@@ -498,7 +533,7 @@ export async function handleIdSearch(
     showLink: config.textMode.showLink,
   })
   const messageContent = h('message', {}, galleryNode)
-  if (cover && config.textMode.showThumbnails) {
+  if (cover && cover.buffer && config.textMode.showThumbnails) {
     messageContent.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
   }
 
@@ -554,8 +589,8 @@ export async function handleKeywordSearchWithMenu(
       },
       () => menuService.clearMenu(session),
     )
-  } catch (error) {
-    logger.error(`图片菜单处理失败: ${error.message}`)
+  } catch (error: any) {
+    logger.error(`图片菜单处理失败: ${getErrorMessage(error)}`)
     await session.send('菜单生成失败，将使用传统模式显示搜索结果。')
     await handleKeywordSearch(session, query, options, apiService, nhentaiService, config)
   }
@@ -603,7 +638,7 @@ export async function handleKeywordSearch(
         const galleryInfoNode = formatGalleryInfo(gallery, index, { showTags, showLink })
         const cover = covers.get(gallery.id as string)
         const messageNode = h('message', {}, galleryInfoNode)
-        if (cover && config.textMode.showThumbnails) {
+        if (cover && cover.buffer && config.textMode.showThumbnails) {
           messageNode.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
         }
         return messageNode
@@ -684,16 +719,19 @@ export async function handleDownloadCommand(
         const useForward = config.useForwardForDownload && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform), imageElements = result.images
 
         if (useForward) {
-          const imageMessages = imageElements.map((item) =>
-            h('message', {}, [h.image(bufferToDataURI(item.buffer, `image/${item.extension}`))]),
-          )
-          await session.send(h('message', { forward: true }, imageMessages))
+          const imageMessages = imageElements
+            .filter((item) => !!item.buffer)
+            .map((item) => h('message', {}, [h.image(bufferToDataURI(item.buffer as Buffer, `image/${item.extension}`))]))
+          if (imageMessages.length > 0) {
+            await session.send(h('message', { forward: true }, imageMessages))
+          }
         } else {
           for (let i = 0; i < imageElements.length; i++) {
             const { index, buffer, extension } = imageElements[i]
+            if (!buffer) continue
             await session.send(
               `正在发送图片: ${index + 1} / ${result.images.length + result.failedIndexes.length}` +
-                h.image(bufferToDataURI(buffer, `image/${extension}`)),
+                h.image(bufferToDataURI(buffer as Buffer, `image/${extension}`)),
             )
             await sleep(config.imageSendDelay * 1000)
           }

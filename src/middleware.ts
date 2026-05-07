@@ -5,7 +5,7 @@ import { galleryUrlRegex } from './constants'
 
 export function createLinkRecognitionMiddleware(config: Config): Middleware {
   return async (session: Session, next) => {
-    if (session.content.startsWith(session.resolve('nh')) || session.content.startsWith(session.resolve('nhentai'))) {
+    if (session.content && (session.content.startsWith(session.resolve('nh')) || session.content.startsWith(session.resolve('nhentai')))) {
       return next()
     }
 

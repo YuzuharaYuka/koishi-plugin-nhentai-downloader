@@ -1,6 +1,6 @@
 import { Command, Session, Context, h } from 'koishi'
 import { Config } from './config'
-import { logger } from './utils'
+import { logger, getErrorMessage } from './utils'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
@@ -21,7 +21,7 @@ export function registerSearchCommands(
   nhCmd
     .subcommand('.search [...query:string]', '搜索漫画或根据ID获取漫画信息')
     .alias('nh搜索', 'nhsearch', 'nh search')
-    .option('sort', '-s <value:string> 按热门排序 (可选: popular, popular-today, popular-week)')
+    .option('sort', '-s <value:string> 按热门排序（仅支持 popular）')
     .option('lang', '-l <value:string> 指定语言 (可选: chinese, japanese, english, all)')
     .usage(
       '根据关键词或漫画 ID 搜索。\n' +
@@ -31,8 +31,10 @@ export function registerSearchCommands(
     .example('nh.search touhou  # 搜索 "touhou"')
     .example('nh.search 177013  # 获取 ID 为 177013 的作品')
     .example('nh.search touhou -s popular  # 按热门度搜索 "touhou"')
-    .example('nh.search -s popular-today -l chinese touhou  # 组合使用多个选项')
+    .example('nh.search touhou -l chinese  # 搜索中文 "touhou"')
     .action(async ({ session, options }, ...queryParts) => {
+      if (!session) return
+      options = options || {}
       if (!ensureInitialized(session)) return
 
       const query = queryParts.join(' ').trim()
@@ -44,15 +46,11 @@ export function registerSearchCommands(
       const nhentaiService = getNhentaiService()
       const menuService = getMenuService()
 
-      if (options.sort && !VALID_SORT_OPTIONS.includes(options.sort)) {
-        return session.send(`无效的排序选项。可用值: ${VALID_SORT_OPTIONS.join(', ')}`)
+      if (options.sort && !VALID_SORT_OPTIONS.includes(options.sort as any)) {
+        return session.send(`无效的排序选项: ${options.sort}`)
       }
-      if (options.lang && !VALID_LANG_OPTIONS.includes(options.lang)) {
-        return session.send(`无效的语言选项。可用值: ${VALID_LANG_OPTIONS.join(', ')}`)
-      }
-
-      if (options.sort && options.sort !== 'popular' && config.debug) {
-        logger.warn(`使用 sort 参数: ${options.sort}, 注意 nhentai API 可能不完全支持此参数`)
+      if (options.lang && !VALID_LANG_OPTIONS.includes(options.lang as any)) {
+        return session.send(`无效的语言选项: ${options.lang}`)
       }
 
       const searchOptions: SearchOptions = {
@@ -90,9 +88,9 @@ export function registerSearchCommands(
             })
           }
         }
-      } catch (error) {
+      } catch (error: any) {
         logger.error(`[搜索] 命令执行失败: %o`, error)
-        await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
+        await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${getErrorMessage(error)}`)
       }
     })
 
@@ -122,6 +120,8 @@ export function registerDownloadCommands(
     .example('nh download https://nhentai.net/g/123456/ -p -k mypassword  # 下载链接对应的漫画为 PDF，并设置密码')
     .example('nh下载 123456 -i  # 逐张发送 ID 为 123456 的漫画图片')
     .action(async ({ session, options }, idOrUrl) => {
+      if (!session) return
+      options = options || {}
       if (!ensureInitialized(session)) return
       if (!idOrUrl) return session.send('请输入要下载的漫画ID或链接。')
 
@@ -134,9 +134,9 @@ export function registerDownloadCommands(
 
       try {
         await handleDownloadCommand(session, id, options as DownloadOptions, '', nhentaiService, config, ctx.baseDir)
-      } catch (error) {
+      } catch (error: any) {
         logger.error(`[下载] 任务 ID ${id} 失败: %o`, error)
-        await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
+        await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${getErrorMessage(error)}`)
       }
     })
 }
@@ -155,6 +155,7 @@ export function registerRandomCommands(
     .usage('随机获取一本 nhentai 漫画的详细信息。交互选项：[Y]下载 [F]换一个 [N]退出')
     .example('nh.random')
     .action(async ({ session }) => {
+      if (!session) return
       if (!ensureInitialized(session)) return
 
       const nhentaiService = getNhentaiService()
@@ -163,9 +164,9 @@ export function registerRandomCommands(
 
       try {
         await handleRandomWithInteraction(session, nhentaiService, menuService, config)
-      } catch (error) {
+      } catch (error: any) {
         logger.error(`[随机] 命令执行失败: %o`, error)
-        await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${error.message}`)
+        await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${getErrorMessage(error)}`)
       }
     })
 
@@ -175,6 +176,7 @@ export function registerRandomCommands(
     .usage('获取 nhentai 当前的热门漫画列表。此指令为 `nh.search -s popular` 的快捷方式。')
     .example('nh.popular')
     .action(async ({ session }) => {
+      if (!session) return
       return session.execute('nh.search -s popular')
     })
 }

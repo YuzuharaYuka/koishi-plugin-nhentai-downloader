@@ -13,19 +13,15 @@ import {
 import { createZip as createZipHelper } from './processors/zip'
 import { createPdf as createPdfHelper } from './processors/pdf'
 
-// 保持向后兼容的类型和函数重导出
 export { CanvasImageProcessor, DownloadedImage, ProcessedImage }
 export { initCanvasProcessor }
 
-// 图片处理器主类，作为所有图片操作的统一入口
 export class Processor {
   public processor: CanvasImageProcessor
   private imageCache: ImageCache | null = null
   private pdfCache: PdfCache | null = null
-  private successfulHosts: Map<string, string> = new Map()
 
   constructor(private ctx: Context, private config: Config) {
-    // Canvas 处理器可以即时创建，无需等待异步初始化
     this.processor = ensureCanvasLoaded()
 
     if (this.config.cache.enableImageCache) {
@@ -44,7 +40,7 @@ export class Processor {
     return new PdfCache(this.config, this.ctx.app.baseDir)
   }
 
-  // 初始化图片缓存和 PDF 缓存
+  // 初始化缓存
   async initializeCache(): Promise<void> {
     await Promise.all([
       this.imageCache?.initialize(),
@@ -52,12 +48,10 @@ export class Processor {
     ])
   }
 
-  // 获取 PDF 缓存实例
   getPdfCache(): PdfCache | null {
     return this.pdfCache
   }
 
-  // 获取图片缓存实例
   getImageCache(): ImageCache | null {
     return this.imageCache
   }
@@ -82,7 +76,6 @@ export class Processor {
       gid,
       this.config,
       this.imageCache,
-      this.successfulHosts,
       mediaId,
       retries,
       sessionToken,

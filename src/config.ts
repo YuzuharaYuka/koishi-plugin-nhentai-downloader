@@ -1,6 +1,7 @@
 import { Schema } from 'koishi'
 
 export interface Config {
+  apiKey?: string;
   proxy: string;
   defaultOutput: 'zip' | 'pdf' | 'img';
   defaultSearchLanguage: 'all' | 'chinese' | 'japanese' | 'english';
@@ -68,6 +69,10 @@ export interface Config {
 export const Config: Schema<Config> = Schema.intersect([
   // ==================== 基础设置 ====================
   Schema.object({
+    apiKey: Schema.string()
+      .role('secret')
+      .description('nhentai 官方 API Key（可选）')
+      .default(''),
     proxy: Schema.string()
       .description('插件访问 nhentai 时使用的网络代理')
       .default(''),

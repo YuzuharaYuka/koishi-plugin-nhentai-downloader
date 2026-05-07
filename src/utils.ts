@@ -5,6 +5,59 @@ export const logger = new Logger('nhentai-downloader')
 
 export { sleep }
 
+/**
+ * 日志等级
+ */
+export enum LogLevel {
+  DEBUG = 0,
+  INFO = 1,
+  WARN = 2,
+  ERROR = 3,
+}
+
+/**
+ * 结构化日志记录器
+ */
+export class StructuredLogger {
+  constructor(
+    private name: string,
+    private minLevel: LogLevel = LogLevel.INFO,
+  ) {}
+
+  private shouldLog(level: LogLevel): boolean {
+    return level >= this.minLevel
+  }
+
+  private formatContext(context: string): string {
+    return `[${context}]`
+  }
+
+  debug(message: string, data?: any): void {
+    if (this.shouldLog(LogLevel.DEBUG)) {
+      logger.debug(`${this.formatContext(this.name)} ${message}` + (data ? ` ${JSON.stringify(data, null, 2)}` : ''))
+    }
+  }
+
+  info(message: string, data?: any): void {
+    if (this.shouldLog(LogLevel.INFO)) {
+      logger.info(`${this.formatContext(this.name)} ${message}` + (data ? ` ${JSON.stringify(data)}` : ''))
+    }
+  }
+
+  warn(message: string, data?: any): void {
+    if (this.shouldLog(LogLevel.WARN)) {
+      logger.warn(`${this.formatContext(this.name)} ${message}` + (data ? ` ${JSON.stringify(data)}` : ''))
+    }
+  }
+
+  error(message: string, error?: any): void {
+    if (this.shouldLog(LogLevel.ERROR)) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      logger.error(`${this.formatContext(this.name)} ${message}: ${errorMsg}`)
+    }
+  }
+}
+
 // 将 Buffer 转换为 Base64 格式的 Data URI
 export function bufferToDataURI(buffer: Buffer, mime = 'image/jpeg'): string {
   return `data:${mime};base64,${buffer.toString('base64')}`
@@ -39,7 +92,10 @@ export function logError(context: string, identifier: string | number, error: un
   const response = (error as any)?.response?.body
 
   if (response) {
-    logger.error(`[${context}] ${identifier} 失败: ${errorMessage}\n响应: ${JSON.stringify(response)}`)
+    logger.error(`[${context}] ${identifier} 失败: ${errorMessage}`)
+    if (JSON.stringify(response).length < 500) {
+      logger.debug(`响应体: ${JSON.stringify(response)}`)
+    }
   } else {
     logger.error(`[${context}] ${identifier} 失败: ${errorMessage}`)
   }

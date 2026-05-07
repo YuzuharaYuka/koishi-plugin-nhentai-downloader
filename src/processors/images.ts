@@ -3,7 +3,6 @@ import * as path from 'path'
 import { CanvasImageProcessor, DownloadedImage, ProcessedImage } from './types'
 import { Config } from '../config'
 import { logger, sleep } from '../utils'
-import { IMAGE_HOST_FALLBACK, THUMB_HOST_FALLBACK } from '../constants'
 import { ImageCache } from '../services/cache'
 
 // 辅助函数：从 URL 提取文件扩展名
@@ -119,8 +118,9 @@ export async function convertImageForMode(
         return { buffer: Buffer.from(result), finalFormat: 'png' }
       }
     } catch (error) {
-      logger.error(`格式转换失败 (${format} → ${targetFormat}): ${error.message}`)
-      throw new Error(`无法转换图片格式: ${error.message}`)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.error(`格式转换失败 (${format} → ${targetFormat}): ${err.message}`)
+      throw new Error(`无法转换图片格式: ${err.message}`)
     }
   }
 
@@ -157,7 +157,8 @@ export async function conditionallyCompressJpeg(
     }
     return Buffer.from(result)
   } catch (error) {
-    logger.error(`JPEG 压缩失败，使用原图: ${error.message}`)
+    const err = error instanceof Error ? error : new Error(String(error))
+    logger.error(`JPEG 压缩失败，使用原图: ${err.message}`)
     return buffer
   }
 }
@@ -203,7 +204,8 @@ export async function applyAntiGzip(
     debugLog && logger.info(`${logPrefix} 处理成功: ${buffer.length} -> ${result.length} bytes (${formatLabel})`)
     return { buffer: Buffer.from(result), format: detectedFormat }
   } catch (error) {
-    logger.warn(`${logPrefix} 处理失败，返回原图: ${error.message}`)
+    const err = error instanceof Error ? error : new Error(String(error))
+    logger.warn(`${logPrefix} 处理失败，返回原图: ${err.message}`)
     return { buffer, format: 'original' }
   }
 }
@@ -222,7 +224,7 @@ export async function batchApplyAntiGzip(
   return Promise.all(images.map((img) => applyAntiGzip(processor, img.buffer, config, img.identifier, preserveFormat)))
 }
 
-// 下载单张图片，支持缓存、重试和智能域名切换
+// 下载单张图片，支持缓存和重试（v2 API 已提供完整 CDN 路径，无需域名切换）
 export async function downloadImage(
   got: GotScraping,
   url: string,
@@ -230,7 +232,6 @@ export async function downloadImage(
   gid: string,
   config: Config,
   imageCache: ImageCache | null,
-  successfulHosts: Map<string, string>,
   mediaId?: string,
   retries: number = config.downloadRetries,
   sessionToken?: object,
@@ -256,40 +257,17 @@ export async function downloadImage(
     return { index, buffer: cached.buffer, extension: cached.extension, galleryId: effectiveGid, mediaId }
   }
 
-  const originalUrl = new URL(url)
-  const originalExt = getFileExtension(url)
-  const fallbackExts = ['jpg', 'png'].filter((ext) => ext !== originalExt)
-  const baseHostname = originalUrl.hostname
-
-  const fallbackHosts = baseHostname.startsWith('t') ? THUMB_HOST_FALLBACK : IMAGE_HOST_FALLBACK
-  const hostsToTry = [baseHostname, ...fallbackHosts]
-
-  // 优先使用之前成功过的主机
-  if (config.enableSmartRetry) {
-    prioritizeSuccessfulHost(hostsToTry, successfulHosts, effectiveGid)
+  // v2 API 已提供完整的 CDN URL，直接下载（不需要多域名回退）
+  const ext = getFileExtension(url)
+  const buffer = await attemptDownload(got, url, effectiveGid, retries, config, sessionToken)
+  if (buffer) {
+    // 保存到缓存
+    await saveCacheIfPossible(imageCache, effectiveGid, mediaId, index, buffer, ext, url, debugLog)
+    return { index, buffer, extension: ext, galleryId: effectiveGid, mediaId }
   }
 
-  for (const host of hostsToTry) {
-    const testUrl = new URL(url)
-    testUrl.hostname = host
-    const urlsWithHost = [testUrl.href, ...fallbackExts.map((ext) => testUrl.href.replace(`.${originalExt}`, `.${ext}`))]
-
-    for (const currentUrl of urlsWithHost) {
-      const buffer = await attemptDownload(got, currentUrl, effectiveGid, retries, config, sessionToken)
-      if (buffer) {
-        const finalExt = getFileExtension(currentUrl)
-        successfulHosts.set(effectiveGid, host)
-
-        // 保存到缓存
-        await saveCacheIfPossible(imageCache, effectiveGid, mediaId, index, buffer, finalExt, currentUrl, debugLog)
-        return { index, buffer, extension: finalExt, galleryId: effectiveGid, mediaId }
-      }
-    }
-    debugLog && logger.info(`域名 ${host} 失败，切换到下一个`)
-  }
-
-  logger.error(`图片 ${index + 1} (${url}) 在所有尝试后下载失败。`)
-  return { index, error: new Error('所有主备域名和图片格式均下载失败') }
+  logger.error(`图片 ${index + 1} (${url}) 下载失败。`)
+  return { index, error: new Error('图片下载失败') }
 }
 
 // 内部辅助：执行单次下载尝试，利用 got-scraping 的内置重试机制
@@ -315,12 +293,25 @@ async function attemptDownload(
       }
       return response.rawBody
     } catch (error) {
-      debugLog && logger.warn(`URL ${url} 下载失败 [${error.name || 'Error'}]: ${error.message}`)
+      const err = error as any
+      const errorCode = err.code || ''
+      const errorName = err.name || 'Error'
+      const isProtocolError = errorCode === 'NGHTTP2_PROTOCOL_ERROR' || errorName.includes('NGHTTP2')
+
+      // 对协议错误进行详细日志记录
+      if (isProtocolError) {
+        logger.warn(`URL ${url} 下载失败 [${errorName}:${errorCode}]: ${err.message} - 可能是服务器连接问题或速率限制`)
+      } else {
+        debugLog && logger.warn(`URL ${url} 下载失败 [${errorName}]: ${err.message}`)
+      }
 
       if (i < maxRetries) {
-        const isTimeout = error.name === 'TimeoutError'
+        // 对协议错误增加更长的重试延迟
         let delay = config.downloadRetryDelay
-        if (config.enableSmartRetry) {
+        if (isProtocolError) {
+          delay = Math.min(config.downloadRetryDelay * (2 + i), 15) // 协议错误延迟: 2-15秒
+        } else if (config.enableSmartRetry) {
+          const isTimeout = errorName === 'TimeoutError'
           delay = isTimeout ? Math.min(delay * Math.pow(2, i), 10) : Math.min(delay * 0.5 * Math.pow(1.5, i), 5)
         }
         debugLog && logger.info(`等待 ${delay.toFixed(1)}s 后重试... (${i + 1}/${maxRetries})`)
