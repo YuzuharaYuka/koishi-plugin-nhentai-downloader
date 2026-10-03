@@ -17,7 +17,7 @@ export const API_BASE = `${API_ORIGIN}/api/v2`
 export const PLUGIN_NAME = 'nhentai-downloader'
 /** 发布到 npm 的包名，仅用于对外标识 */
 export const PACKAGE_NAME = 'koishi-plugin-nhentai-downloader'
-export const PLUGIN_VERSION = '2.1.1'
+export const PLUGIN_VERSION = '2.1.2'
 export const PLUGIN_HOMEPAGE = 'https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader'
 /** 官方要求写成 `AppName/version (contact or project URL)` */
 export const USER_AGENT = `${PACKAGE_NAME}/${PLUGIN_VERSION} (+${PLUGIN_HOMEPAGE})`
