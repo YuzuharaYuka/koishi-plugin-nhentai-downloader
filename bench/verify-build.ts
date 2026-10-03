@@ -15,7 +15,7 @@ const ok = (label: string, pass: boolean, extra = '') =>
 async function main() {
   const plugin = require('../lib/index.js')
 
-  ok('导出 name', plugin.name === 'koishi-plugin-nhentai-downloader', plugin.name)
+  ok('导出 name（短名）', plugin.name === 'nhentai-downloader', plugin.name)
   ok('导出 inject.http', Array.isArray(plugin.inject?.required) && plugin.inject.required.includes('http'))
   ok('导出 usage', typeof plugin.usage === 'string' && plugin.usage.includes('nh.search'))
   ok('导出 Config schema', typeof plugin.Config === 'function' || typeof plugin.Config === 'object')

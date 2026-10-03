@@ -13,12 +13,14 @@ export const API_ORIGIN = 'https://nhentai.net'
 export const API_BASE = `${API_ORIGIN}/api/v2`
 
 // ─── 客户端标识 ──────────────────────────────────────────────
-// 官方文档要求：`AppName/version (contact or project URL)`
-export const PLUGIN_NAME = 'koishi-plugin-nhentai-downloader'
-export const PLUGIN_VERSION = '2.1.0'
+/** 日志前缀与 Koishi 插件名，取短名 */
+export const PLUGIN_NAME = 'nhentai-downloader'
+/** 发布到 npm 的包名，仅用于对外标识 */
+export const PACKAGE_NAME = 'koishi-plugin-nhentai-downloader'
+export const PLUGIN_VERSION = '2.1.1'
 export const PLUGIN_HOMEPAGE = 'https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader'
 /** 官方要求写成 `AppName/version (contact or project URL)` */
-export const USER_AGENT = `${PLUGIN_NAME}/${PLUGIN_VERSION} (+${PLUGIN_HOMEPAGE})`
+export const USER_AGENT = `${PACKAGE_NAME}/${PLUGIN_VERSION} (+${PLUGIN_HOMEPAGE})`
 
 // ─── CDN 备用主机 ────────────────────────────────────────────
 // 运行时以 GET /api/v2/config 返回的 image_servers / thumb_servers 为准，这里仅作兜底
