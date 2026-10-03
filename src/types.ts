@@ -1,79 +1,220 @@
-// nhentai API v2 图片页面信息
-export interface PageInfo {
-  number: number // 页码
-  path: string // 相对 CDN 路径，例如 galleries/1900667/1.jpg
-  width: number // 原图宽度
-  height: number // 原图高度
-  thumbnail: { // 缩略图信息
-    path: string
-    width: number
-    height: number
-  }
-}
+// ============================================================
+// 类型定义
+// 上半部分为官方 API v2 的原始响应结构（与 openapi.json 一一对应），
+// 下半部分为插件内部使用的归一化结构。
+// ============================================================
 
-// nhentai API v2 图片信息对象（cover 和 thumbnail）
-export interface ImageObject {
-  path: string // 相对 CDN 路径
+// ─── 官方 API v2 原始结构 ────────────────────────────────────
+
+/** GalleryDetailResponse.cover / .thumbnail（对象为 CoverInfo） */
+export interface ApiCoverInfo {
+  path: string
   width: number
   height: number
 }
 
-// nhentai 画廊的图片集合（v2 结构）
+/** GalleryDetailResponse.pages[]（对象为 PageInfo） */
+export interface ApiPageInfo {
+  number: number
+  path: string
+  width: number
+  height: number
+  /** 缩略图相对路径（字符串，不是对象） */
+  thumbnail: string
+  thumbnail_width: number
+  thumbnail_height: number
+}
+
+/** GalleryDetailResponse.title（对象为 GalleryTitle） */
+export interface ApiGalleryTitle {
+  english: string
+  japanese: string | null
+  pretty: string
+}
+
+/** 标签（对象为 TagResponse） */
+export interface ApiTag {
+  id: number
+  type: string
+  name: string
+  slug: string
+  url: string
+  count: number
+  description?: string | null
+  is_community?: boolean | null
+}
+
+/** 列表项（对象为 GalleryListItem，用于搜索 / 热门 / 相关作品） */
+export interface ApiGalleryListItem {
+  id: number
+  media_id: string
+  english_title: string
+  japanese_title: string | null
+  thumbnail: string
+  thumbnail_width: number
+  thumbnail_height: number
+  num_pages?: number
+  num_favorites?: number
+  tag_ids?: number[]
+  blacklisted?: boolean
+}
+
+/** 画廊详情（对象为 GalleryDetailResponse） */
+export interface ApiGalleryDetail {
+  id: number
+  media_id: string
+  title: ApiGalleryTitle
+  cover: ApiCoverInfo
+  thumbnail: ApiCoverInfo
+  scanlator?: string
+  upload_date: number
+  tags: ApiTag[]
+  num_pages: number
+  num_favorites: number
+  pages?: ApiPageInfo[]
+  /** 仅在 include 包含对应项时返回 */
+  comments?: unknown[] | null
+  comment_count?: number | null
+  related?: ApiGalleryListItem[] | null
+  is_favorited?: boolean | null
+  suggestions?: unknown
+}
+
+/** 分页响应（对象为 PaginatedResponse[T]） */
+export interface ApiPaginated<T> {
+  result: T[]
+  num_pages: number
+  per_page?: number
+  total?: number | null
+}
+
+/** GET /galleries/{id}/related（对象为 RelatedGalleriesResponse，无分页字段） */
+export interface ApiRelatedGalleries {
+  result: ApiGalleryListItem[]
+}
+
+/** GET /cdn（对象为 CdnConfigResponse） */
+export interface ApiCdnConfig {
+  image_servers: string[]
+  thumb_servers: string[]
+}
+
+export interface ApiAnnouncementLink {
+  label?: string
+  url?: string
+}
+
+export interface ApiAnnouncement {
+  message: string
+  links?: ApiAnnouncementLink[]
+}
+
+/** GET /config（对象为 ConfigResponse，CDN 配置的超集） */
+export interface ApiAppConfig extends ApiCdnConfig {
+  announcement?: ApiAnnouncement | null
+}
+
+/** GET /galleries/random（对象为 {id} 的宽松结构） */
+export interface ApiRandomGallery {
+  id: number
+}
+
+/** POST /galleries/{id}/download（对象为 DownloadResponse） */
+export interface ApiDownloadResponse {
+  url: string
+  /** 过期时间（Unix 秒） */
+  expires_at: number
+}
+
+/** 422 校验错误（对象为 HTTPValidationError） */
+export interface ApiValidationError {
+  detail?: Array<{ loc?: Array<string | number>; msg?: string; type?: string }>
+}
+
+// ─── 插件内部归一化结构 ──────────────────────────────────────
+
+/** 页面信息：缩略图被归一化为完整相对路径字符串 */
+export interface PageInfo {
+  number: number
+  /** 相对 CDN 路径，例如 galleries/4222903/1.webp */
+  path: string
+  width: number
+  height: number
+  /** 相对 CDN 路径，例如 galleries/4222903/1t.webp */
+  thumbnail: string
+  thumbnail_width: number
+  thumbnail_height: number
+}
+
+/** 图片对象（封面 / 缩略图） */
+export interface ImageObject {
+  path: string
+  width: number
+  height: number
+}
+
+/** 画廊图片集合 */
 export interface GalleryImages {
-  pages: PageInfo[] // 所有页面信息
-  cover: ImageObject // 封面
-  thumbnail: ImageObject // 缩略图
+  pages: PageInfo[]
+  cover: ImageObject
+  thumbnail: ImageObject
 }
 
-// nhentai 画廊的标题
+/** 画廊标题 */
 export interface Title {
-  english: string // 英文标题
-  japanese: string // 日文标题
-  pretty: string // 优化显示的标题
+  english: string
+  japanese: string
+  pretty: string
 }
 
-// nhentai 标签信息
+/** 标签 */
 export interface Tag {
   id: number
-  type: 'tag' | 'category' | 'artist' | 'parody' | 'character' | 'group' | 'language'
+  type: 'tag' | 'category' | 'artist' | 'parody' | 'character' | 'group' | 'language' | string
   name: string
   url: string
   count: number
+  slug?: string
 }
 
-// nhentai API v2 搜索结果中的画廊（与完整Gallery结构不同）
+/** 列表项归一化结构（搜索 / 热门 / 相关作品） */
 export interface SearchGallery {
-  id: number // 搜索结果中 id 是数字
+  id: number
   media_id: string
-  english_title: string // 扁平结构，不是 title.english
-  japanese_title: string // 扁平结构，不是 title.japanese
-  thumbnail: string // CDN 相对路径，如 "galleries/3922394/thumb.webp"
+  english_title: string
+  japanese_title: string | null
+  /** CDN 相对路径 */
+  thumbnail: string
   thumbnail_width: number
   thumbnail_height: number
   num_pages: number
+  num_favorites: number
   tag_ids: number[]
   blacklisted: boolean
 }
 
-// 任何可能来自菜单的画廊（搜索或完整获取）
-export type MenuGallery = Gallery | SearchGallery
-
-// nhentai 画廊的完整信息（getGallery 返回的格式）
+/** 画廊详情归一化结构 */
 export interface Gallery {
-  id: string // 完整 Gallery 中 id 是字符串
+  id: string
   media_id: string
-  title: Title // 标题
-  images: GalleryImages // 图片信息
-  scanlator: string // 扫描者
-  upload_date: number // 上传日期 (Unix 时间戳)
-  tags: Tag[] // 标签
-  num_pages: number // 总页数
-  num_favorites: number // 收藏数
+  title: Title
+  images: GalleryImages
+  scanlator: string
+  upload_date: number
+  tags: Tag[]
+  num_pages: number
+  num_favorites: number
+  /** 仅在请求时带 include=related 才有值 */
+  related?: SearchGallery[]
 }
 
-// nhentai 搜索结果
+/** 列表结果（搜索 / 热门 / 相关作品统一结构） */
 export interface SearchResult {
-  result: SearchGallery[] // 搜索结果中的画廊列表
-  num_pages: number // 总页数
-  per_page: number // 每页项目数
+  result: SearchGallery[]
+  num_pages: number
+  per_page: number
+  total?: number | null
 }
+
+/** 菜单中可以出现的画廊（列表项或详情） */
+export type MenuGallery = Gallery | SearchGallery

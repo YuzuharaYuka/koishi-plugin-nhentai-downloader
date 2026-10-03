@@ -1,78 +1,14 @@
 import { Logger, sleep } from 'koishi'
+import { PLUGIN_NAME } from './constants'
 
 // 插件专用的 Logger 实例
-export const logger = new Logger('nhentai-downloader')
+export const logger = new Logger(PLUGIN_NAME)
 
 export { sleep }
-
-/**
- * 日志等级
- */
-export enum LogLevel {
-  DEBUG = 0,
-  INFO = 1,
-  WARN = 2,
-  ERROR = 3,
-}
-
-/**
- * 结构化日志记录器
- */
-export class StructuredLogger {
-  constructor(
-    private name: string,
-    private minLevel: LogLevel = LogLevel.INFO,
-  ) {}
-
-  private shouldLog(level: LogLevel): boolean {
-    return level >= this.minLevel
-  }
-
-  private formatContext(context: string): string {
-    return `[${context}]`
-  }
-
-  debug(message: string, data?: any): void {
-    if (this.shouldLog(LogLevel.DEBUG)) {
-      logger.debug(`${this.formatContext(this.name)} ${message}` + (data ? ` ${JSON.stringify(data, null, 2)}` : ''))
-    }
-  }
-
-  info(message: string, data?: any): void {
-    if (this.shouldLog(LogLevel.INFO)) {
-      logger.info(`${this.formatContext(this.name)} ${message}` + (data ? ` ${JSON.stringify(data)}` : ''))
-    }
-  }
-
-  warn(message: string, data?: any): void {
-    if (this.shouldLog(LogLevel.WARN)) {
-      logger.warn(`${this.formatContext(this.name)} ${message}` + (data ? ` ${JSON.stringify(data)}` : ''))
-    }
-  }
-
-  error(message: string, error?: any): void {
-    if (this.shouldLog(LogLevel.ERROR)) {
-      const errorMsg = error instanceof Error ? error.message : String(error)
-      logger.error(`${this.formatContext(this.name)} ${message}: ${errorMsg}`)
-    }
-  }
-}
 
 // 将 Buffer 转换为 Base64 格式的 Data URI
 export function bufferToDataURI(buffer: Buffer, mime = 'image/jpeg'): string {
   return `data:${mime};base64,${buffer.toString('base64')}`
-}
-
-// 动态导入 ESM 模块
-export async function importESM<T = any>(moduleName: string): Promise<T> {
-  try {
-    const module = await import(moduleName)
-    return (module.default ?? module) as T
-  } catch (error) {
-    const message = getErrorMessage(error)
-    logger.error(`导入模块 "${moduleName}" 失败: ${message}`)
-    throw new Error(`无法加载模块 ${moduleName}: ${message}`)
-  }
 }
 
 // 统一的错误消息提取函数
@@ -86,17 +22,3 @@ export function getErrorMessage(error: unknown): string {
   }
 }
 
-// 统一的错误日志记录函数
-export function logError(context: string, identifier: string | number, error: unknown): void {
-  const errorMessage = getErrorMessage(error)
-  const response = (error as any)?.response?.body
-
-  if (response) {
-    logger.error(`[${context}] ${identifier} 失败: ${errorMessage}`)
-    if (JSON.stringify(response).length < 500) {
-      logger.debug(`响应体: ${JSON.stringify(response)}`)
-    }
-  } else {
-    logger.error(`[${context}] ${identifier} 失败: ${errorMessage}`)
-  }
-}

@@ -1,99 +1,44 @@
 import { Context } from 'koishi'
-import { Config } from './config'
+import { PLUGIN_NAME } from './constants'
+import { type Config, normalizeConfig } from './config'
 import { logger } from './utils'
 import { NhentaiPlugin } from './plugin'
 import { registerAllCommands } from './commands'
 import { createLinkRecognitionMiddleware } from './middleware'
 
 export * from './config'
-export const name = 'nhentai-downloader'
+export const name = PLUGIN_NAME
 
-// 无依赖
+// 网络请求统一走 Koishi 的 ctx.http，代理交给 proxy-agent 插件
 export const inject = {
-  required: [],
-  optional: []
+  required: ['http'],
+  optional: [],
 }
 
 export const usage = `
-## 使用说明
+[nhentai](https://nhentai.net/) 漫画搜索与下载。指令前缀 \`nh\`（\`nh.指令\` / \`nh指令\` / \`nh command\` 均可）。
 
-本插件提供 **[nhentai](https://nhentai.net/)** 漫画搜索与下载。
+**内容涉及成人向漫画，请在合适的范围内使用。**
 
-**注意：本插件内容涉及成人向（NSFW）漫画，请确保在合适的范围内使用。**
+| 指令 | 别名 | 说明 |
+| :--- | :--- | :--- |
+| \`nh.search <关键词/ID>\` | \`nh搜索\` | 按关键词或作品 ID 搜索，\`-s\` 排序、\`-l\` 筛选语言 |
+| \`nh.download <ID/链接>\` | \`nh下载\` | 下载作品，\`-p\` PDF、\`-z\` ZIP、\`-i\` 逐张图片、\`-k\` 密码 |
+| \`nh.popular\` | \`nh热门\` | 今日热门，等价于 \`nh.search -s popular-today\` |
+| \`nh.random\` | \`nh随机\` | 随机推荐，\`Y\` 下载、\`F\` 换一个、\`N\` 退出 |
 
-### 快速开始
+搜索关键词支持官方过滤语法，如 \`artist:name\`、\`language:chinese\`、\`pages:>50\`、\`favorites:>=1000\`、\`uploaded:<7d\`、\`-tag:netorare\`。
 
-- 所有指令均以 \`nh\` 前缀调用：\`nh.指令\`（推荐）/ \`nh指令\` / \`nh command\`
-- 查看帮助：\`help nh.search\`
+搜索结果回复序号即可下载，\`F\` 下一页、\`B\` 上一页、\`N\` 退出。
 
-### 常用指令
-
-#### 搜索：\`nh.search\`（别名：\`nh搜索\`、\`nhsearch\`）
-
-语法：
-\`\`\`
-nh.search <关键词/ID> [选项]
-\`\`\`
-
-选项：
-- \`-s, --sort <type>\`：\`popular\` / \`popular-today\` / \`popular-week\`
-- \`-l, --lang <lang>\`：\`chinese\` / \`japanese\` / \`english\` / \`all\`
-
-示例：
-- \`nh搜索 touhou\`
-- \`nh search 608023\`
-- \`nh搜索 touhou -s popular -l chinese\`
-
-交互（菜单/文本两种模式都支持）：
-- 回复序号：下载对应漫画；\`F\` 下一页；\`B\` 上一页；\`N\` 退出
-
-#### 下载：\`nh.download\`（别名：\`nh下载\`、\`nhdownload\`）
-
-语法：
-\`\`\`
-nh.download <ID/链接> [选项]
-\`\`\`
-
-选项：
-- \`-p, --pdf\`：输出 PDF
-- \`-z, --zip\`：输出 ZIP
-- \`-i, --image\`：逐张发送图片
-- \`-k, --key <密码>\`：设置文件密码
-
-示例：
-- \`nh下载 608023 -z -k 1234\`
-- \`nh download https://nhentai.net/g/608023/ --pdf\`
-
-#### 其他
-
-- \`nh.popular\` / \`nh热门\`：热门漫画
-- \`nh.random\` / \`nh随机\`：随机推荐，支持 \`Y\`下载 \`F\`换一个 \`N\`退出 交互
-
-### 使用提示
-
-- 直接发送 nhentai 链接可自动触发下载（可在配置中关闭）
-
-### 注意事项
-
-1. 需要可访问 nhentai.net 的网络环境（必要时配置代理）
-2. 插件包含 NSFW 内容，请在合适场景使用
-3. 仅供学习交流，请尊重版权
+配置 \`apiKey\` 可提高接口配额并启用黑名单过滤；无法访问 nhentai 时请配置 proxy-agent 代理。
 `
 
-export function apply(ctx: Context, config: Config) {
-  // 配置运行时校验，确保配置在安全范围内
-  const safeConfig: Config = {
-    ...config,
-    downloadConcurrency: Math.max(1, Math.min(25, config.downloadConcurrency)),
-    imageSendDelay: Math.max(0, config.imageSendDelay),
-    promptTimeout: Math.max(5, Math.min(300, config.promptTimeout)),
-    downloadTimeout: Math.max(5, Math.min(300, config.downloadTimeout)),
-    downloadRetries: Math.max(0, Math.min(5, config.downloadRetries)),
-    downloadRetryDelay: Math.max(0, Math.min(60, config.downloadRetryDelay)),
-  }
+export function apply(ctx: Context, rawConfig: Config) {
+  const config = normalizeConfig(rawConfig)
 
   ctx.plugin((ctx) => {
-    const plugin = new NhentaiPlugin(ctx, safeConfig)
+    const plugin = new NhentaiPlugin(ctx, config)
 
     registerAllCommands(
       ctx,
@@ -108,19 +53,19 @@ export function apply(ctx: Context, config: Config) {
 
     ctx.on('ready', async () => {
       try {
-        await checkAndClearCaches(ctx, safeConfig, plugin.getPreviousConfig())
+        await checkAndClearCaches(ctx, config, plugin.getPreviousConfig())
         await plugin.initialize()
-        plugin.setPreviousConfig({ ...safeConfig })
+        plugin.setPreviousConfig({ ...config })
         logger.info('插件初始化完成')
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         logger.error('插件初始化失败，插件将无法使用')
         logger.error('错误详情:', errorMessage)
 
-        if (errorMessage.includes('got-scraping')) {
-          logger.error('网络请求模块加载失败,请检查网络连接或重新安装插件')
-        } else if (errorMessage.includes('@napi-rs/canvas')) {
-          logger.error('图片处理模块加载失败,请尝试重新安装插件')
+        if (errorMessage.includes('@napi-rs/canvas')) {
+          logger.error('图片处理模块加载失败，请尝试重新安装插件')
+        } else if (/Cannot find module '(yauzl|pdfkit|archiver)/.test(errorMessage)) {
+          logger.error('依赖模块加载失败，请尝试重新安装插件')
         } else {
           logger.error('请检查日志并报告问题到: https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/issues')
         }
@@ -206,7 +151,11 @@ async function cleanTempFiles(ctx: Context, config: Config): Promise<void> {
     let cleanedCount = 0
 
     for (const entry of entries) {
-      if (entry.isFile() && entry.name.startsWith('temp_') && entry.name.endsWith('.pdf')) {
+      const isTempFile =
+        entry.isFile() &&
+        entry.name.startsWith('temp_') &&
+        (entry.name.endsWith('.pdf') || entry.name.endsWith('.zip'))
+      if (isTempFile) {
         try {
           await fs.unlink(path.join(downloadDir, entry.name))
           cleanedCount++
@@ -223,6 +172,18 @@ async function cleanTempFiles(ctx: Context, config: Config): Promise<void> {
           if (config.debug) logger.warn(`删除临时目录失败 ${entry.name}: ${errorMessage}`)
         }
       }
+    }
+
+    // 官方压缩包只在下载过程中存在；异常退出可能残留，一并清掉
+    const archiveDir = path.join(downloadDir, 'official-archive')
+    try {
+      const stale = await fs.readdir(archiveDir)
+      if (stale.length > 0) {
+        await fs.rm(archiveDir, { recursive: true, force: true })
+        cleanedCount += stale.length
+      }
+    } catch {
+      // 目录不存在属正常情况
     }
 
     if (cleanedCount > 0) {

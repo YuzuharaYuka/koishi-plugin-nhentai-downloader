@@ -1,69 +1,94 @@
-// 内存缓存实现，用于API响应缓存
+/**
+ * 缓存层，三类缓存共用一个 LRU + TTL 基类：
+ *
+ * - InMemoryCache：接口响应，进程内，带惰性过期与定期清扫
+ * - ImageCache：页面图片与处理后图片，落盘，按体积做 LRU
+ * - PdfCache：生成的 PDF，落盘，按体积做 LRU
+ */
+
+import { promises as fs } from 'fs'
+import * as path from 'path'
+import { createHash } from 'crypto'
+import { logger } from '../utils'
+import type { Config } from '../config'
+
 export interface CacheConfig {
   maxSize?: number // 最大缓存条目数
   defaultTTL?: number // 默认过期时间（毫秒）
 }
 
-// 支持自动过期和大小限制的内存缓存类
+/** 兜底清扫周期：惰性过期之外，定期回收无人访问的过期条目 */
+const SWEEP_INTERVAL_MS = 60_000
+
+/**
+ * LRU + TTL 内存缓存。
+ *
+ * 性能要点：
+ *   - 不再为每个条目创建 setTimeout：条目数达数百时会有同等数量的定时器，
+ *     现在改为 get() 时惰性判过期 + 单个 unref 定时器定期清扫；
+ *   - 利用 Map 的插入顺序实现 O(1) 淘汰（原实现每次插入都全量扫描找最旧条目）；
+ *   - get() 命中后把条目重新插入到 Map 末尾，从而具备真正的 LRU 语义。
+ */
 export class InMemoryCache {
-  private store = new Map<string, { value: any; timer?: NodeJS.Timeout; createdAt: number }>()
+  private store = new Map<string, { value: any; expiresAt: number }>()
   private maxSize: number
   private defaultTTL: number
   private hitCount: number = 0
   private missCount: number = 0
+  private sweepTimer: NodeJS.Timeout | null = null
 
   constructor(config: CacheConfig = {}) {
     this.maxSize = config.maxSize || 1000
     this.defaultTTL = config.defaultTTL || 600000 // 默认10分钟
+    this.sweepTimer = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS)
+    this.sweepTimer.unref?.()
   }
 
   async get<T>(key: string): Promise<T | undefined> {
     const entry = this.store.get(key)
-    if (entry) {
-      this.hitCount++
-      return entry.value
+    if (!entry) {
+      this.missCount++
+      return undefined
     }
-    this.missCount++
-    return undefined
+    if (entry.expiresAt <= Date.now()) {
+      this.store.delete(key)
+      this.missCount++
+      return undefined
+    }
+    // 触摸：移到 Map 末尾，维持 LRU 顺序
+    this.store.delete(key)
+    this.store.set(key, entry)
+    this.hitCount++
+    return entry.value
   }
 
   async set(key: string, value: any, maxAge?: number): Promise<void> {
-    // 缓存已满则清理最旧条目
-    if (this.store.size >= this.maxSize && !this.store.has(key)) {
+    const existing = this.store.get(key)
+    if (existing) {
+      // 先删除再插入，保证新条目位于 Map 末尾
+      this.store.delete(key)
+    } else if (this.store.size >= this.maxSize) {
       this.evictOldest()
     }
 
-    const existing = this.store.get(key)
-    if (existing?.timer) clearTimeout(existing.timer)
-
     const ttl = maxAge || this.defaultTTL
-    const timer = setTimeout(() => this.store.delete(key), ttl)
-
-    this.store.set(key, { value, timer, createdAt: Date.now() })
+    this.store.set(key, { value, expiresAt: Date.now() + ttl })
   }
 
+  /** Map 的第一个键即最久未使用的条目 */
   private evictOldest(): void {
-    let oldestKey: string | null = null
-    let oldestTime = Infinity
+    const oldest = this.store.keys().next()
+    if (!oldest.done) this.store.delete(oldest.value)
+  }
 
-    for (const [key, entry] of this.store.entries()) {
-      if (entry.createdAt < oldestTime) {
-        oldestTime = entry.createdAt
-        oldestKey = key
-      }
-    }
-
-    if (oldestKey) {
-      const entry = this.store.get(oldestKey)
-      if (entry?.timer) clearTimeout(entry.timer)
-      this.store.delete(oldestKey)
+  private sweep(): void {
+    const now = Date.now()
+    for (const [key, entry] of this.store) {
+      if (entry.expiresAt <= now) this.store.delete(key)
     }
   }
 
   clear(): void {
-    for (const { timer } of this.store.values()) {
-      if (timer) clearTimeout(timer)
-    }
     this.store.clear()
   }
 
@@ -81,14 +106,13 @@ export class InMemoryCache {
 
   dispose() {
     this.clear()
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer)
+      this.sweepTimer = null
+    }
   }
 }
 
-import { promises as fs } from 'fs'
-import * as path from 'path'
-import { createHash } from 'crypto'
-import { logger } from '../utils'
-import { Config } from '../config'
 
 interface CacheEntry {
   galleryId: string
@@ -101,6 +125,8 @@ interface CacheEntry {
   accessCount: number
   size: number
   isThumb?: boolean
+  /** 非空表示已处理缓存，值为编码参数指纹（键与文件名都带 -processed-<指纹> 后缀） */
+  processed?: string
 }
 
 // 缓存基类，提供通用的 LRU 清理、索引管理功能
@@ -235,7 +261,20 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
   private async performSaveIndex(entries?: T[]): Promise<void> {
     try {
       const data = JSON.stringify(entries || Array.from(this.entries.values()), null, 2)
-      await fs.writeFile(this.indexFile, data, 'utf-8')
+      // 原子替换：先写临时文件再 rename。直接覆盖时若进程被杀或恰好被读到，
+      // 索引会变成半截 JSON，loadIndex 失败后会清空全部索引，
+      // 而磁盘上的缓存文件又只靠索引回收，于是变成永久泄漏。
+      const tmpFile = `${this.indexFile}.tmp`
+      try {
+        await fs.writeFile(tmpFile, data, 'utf-8')
+        await fs.rename(tmpFile, this.indexFile)
+      } catch (renameError) {
+        // 少数环境（目标文件被占用）rename 会失败，退回直接写入
+        await fs.writeFile(this.indexFile, data, 'utf-8').catch(() =>
+          logger.warn(`写入缓存索引失败: ${(renameError as Error).message}`),
+        )
+        await fs.rm(tmpFile, { force: true }).catch(() => undefined)
+      }
       this.indexDirty = false
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
@@ -303,8 +342,10 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
 
 export class ImageCache extends BaseCache<CacheEntry> {
   constructor(protected config: Config, baseDir: string) {
-    const maxSize = (config.cache.imageCacheMaxSize ?? 1000) * 1024 * 1024
-    const ttl = (config.cache.imageCacheTTL ?? 24) * 60 * 60 * 1000
+    const maxSize = (config.cache.imageCacheMaxSize ?? 1024) * 1024 * 1024
+    // 与 PDF 缓存一致：0 表示永久保存。此前直接乘算得到 0，
+    // 会让所有条目一写入就判定为过期（缓存永远不命中），与配置描述相反。
+    const ttl = config.cache.imageCacheTTL === 0 ? Infinity : config.cache.imageCacheTTL * 60 * 60 * 1000
     super(config, baseDir, 'image-cache', maxSize, ttl)
   }
 
@@ -331,8 +372,14 @@ export class ImageCache extends BaseCache<CacheEntry> {
           if (Date.now() - entry.cachedAt < this.cacheTTL) {
             entry.lastAccessed = entry.lastAccessed || entry.cachedAt
             entry.accessCount = entry.accessCount || 1
+            // 早期索引里 processed 是布尔，现在改为参数指纹；旧值统一视作 legacy
+            const rawProcessed = entry.processed as unknown
+            if (typeof rawProcessed === 'boolean') entry.processed = rawProcessed ? 'legacy' : undefined
             validEntries.push(entry)
-            this.entries.set(this.getCacheKey(entry.galleryId, entry.mediaId, entry.pageIndex, entry.isThumb), entry)
+            this.entries.set(
+              this.getCacheKey(entry.galleryId, entry.mediaId, entry.pageIndex, entry.isThumb, entry.processed),
+              entry,
+            )
           } else {
             await fs.unlink(entry.filePath).catch(() => {})
           }
@@ -353,17 +400,17 @@ export class ImageCache extends BaseCache<CacheEntry> {
     }
   }
 
-  private getCacheKey(galleryId: string, mediaId: string, pageIndex: number, isThumb = false, processed = false): string {
+  private getCacheKey(galleryId: string, mediaId: string, pageIndex: number, isThumb = false, processed?: string): string {
     // 确保 galleryId 为字符串类型（防御性编程）
     const gidStr = String(galleryId)
     const midStr = String(mediaId)
-    return `${gidStr}-${midStr}-${pageIndex}${isThumb ? '-thumb' : ''}${processed ? '-processed' : ''}`
+    return `${gidStr}-${midStr}-${pageIndex}${isThumb ? '-thumb' : ''}${processed ? `-processed-${processed}` : ''}`
   }
 
-  private getCacheFilePath(galleryId: string, mediaId: string, pageIndex: number, extension: string, isThumb = false, processed = false): string {
+  private getCacheFilePath(galleryId: string, _mediaId: string, pageIndex: number, extension: string, isThumb = false, processed?: string): string {
     const galleryIdStr = String(galleryId)
     const dir = path.resolve(this.cacheDir, galleryIdStr)
-    const suffix = `${isThumb ? '-thumb' : ''}${processed ? '-processed' : ''}`
+    const suffix = `${isThumb ? '-thumb' : ''}${processed ? `-processed-${processed}` : ''}`
     const filename = `${galleryIdStr}-${pageIndex}${suffix}.${extension}`
     return path.resolve(dir, filename)
   }
@@ -419,6 +466,7 @@ export class ImageCache extends BaseCache<CacheEntry> {
         accessCount: 1,
         size: buffer.length,
         isThumb,
+        processed: undefined,
       }
       this.entries.set(key, entry)
       this.scheduleSaveIndex()
@@ -429,8 +477,17 @@ export class ImageCache extends BaseCache<CacheEntry> {
     }
   }
 
-  async getProcessed(galleryId: string, mediaId: string, pageIndex: number): Promise<{ buffer: Buffer; extension: string } | null> {
-    const key = this.getCacheKey(galleryId, mediaId, pageIndex, false, true)
+  /** 某画廊的 1..pageCount 页是否已全部在缓存索引中（用于跳过官方直链签发） */
+  hasCachedPages(galleryId: string, mediaId: string, pageCount: number): boolean {
+    if (!this.config.cache.enableImageCache || pageCount <= 0) return false
+    for (let index = 0; index < pageCount; index++) {
+      if (!this.entries.has(this.getCacheKey(galleryId, mediaId, index, false))) return false
+    }
+    return true
+  }
+
+  async getProcessed(galleryId: string, mediaId: string, pageIndex: number, variant: string): Promise<{ buffer: Buffer; extension: string } | null> {
+    const key = this.getCacheKey(galleryId, mediaId, pageIndex, false, variant)
     const entry = this.entries.get(key)
     if (!entry) {
       this.missCount++
@@ -440,7 +497,7 @@ export class ImageCache extends BaseCache<CacheEntry> {
     try {
       await fs.access(entry.filePath)
       if (Date.now() - entry.cachedAt >= this.cacheTTL) {
-        await this.deleteProcessed(galleryId, mediaId, pageIndex)
+        await this.deleteProcessed(galleryId, mediaId, pageIndex, variant)
         this.missCount++
         return null
       }
@@ -458,12 +515,12 @@ export class ImageCache extends BaseCache<CacheEntry> {
     }
   }
 
-  async setProcessed(galleryId: string, mediaId: string, pageIndex: number, buffer: Buffer, extension: string): Promise<void> {
+  async setProcessed(galleryId: string, mediaId: string, pageIndex: number, buffer: Buffer, extension: string, variant: string): Promise<void> {
     if (!this.config.cache.enableImageCache) return
 
     try {
-      const key = this.getCacheKey(galleryId, mediaId, pageIndex, false, true)
-      const filePath = this.getCacheFilePath(galleryId, mediaId, pageIndex, extension, false, true)
+      const key = this.getCacheKey(galleryId, mediaId, pageIndex, false, variant)
+      const filePath = this.getCacheFilePath(galleryId, mediaId, pageIndex, extension, false, variant)
       await fs.mkdir(path.dirname(filePath), { recursive: true })
       await this.cleanupIfNeeded(buffer.length)
       await fs.writeFile(filePath, buffer)
@@ -479,6 +536,7 @@ export class ImageCache extends BaseCache<CacheEntry> {
         accessCount: 1,
         size: buffer.length,
         isThumb: false,
+        processed: variant,
       }
       this.entries.set(key, entry)
       this.scheduleSaveIndex()
@@ -489,8 +547,8 @@ export class ImageCache extends BaseCache<CacheEntry> {
     }
   }
 
-  async deleteProcessed(galleryId: string, mediaId: string, pageIndex: number): Promise<void> {
-    const key = this.getCacheKey(galleryId, mediaId, pageIndex, false, true)
+  async deleteProcessed(galleryId: string, mediaId: string, pageIndex: number, variant: string): Promise<void> {
+    const key = this.getCacheKey(galleryId, mediaId, pageIndex, false, variant)
     const entry = this.entries.get(key)
     if (entry) {
       try {
@@ -537,7 +595,11 @@ export class ImageCache extends BaseCache<CacheEntry> {
   }
 
   protected deleteEntry(entry: CacheEntry): void {
-    this.entries.delete(this.getCacheKey(entry.galleryId, entry.mediaId, entry.pageIndex, entry.isThumb))
+    // processed 必须一起传入：processed 缓存用的是带 -processed 后缀的键，
+    // 漏传会删掉同页原始图的索引项，使原始文件变成永远不会被回收的孤儿
+    this.entries.delete(
+      this.getCacheKey(entry.galleryId, entry.mediaId, entry.pageIndex, entry.isThumb, entry.processed),
+    )
   }
 }
 

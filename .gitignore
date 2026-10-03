@@ -1,6 +1,5 @@
-# 编译产物 (不提交到 Git，但会通过 .npmignore 控制发包)
+# 编译产物（不提交；发包由 package.json 的 files 字段控制）
 lib/
-wasm-dist/
 dist/
 
 # 依赖和缓存
@@ -65,6 +64,8 @@ coverage/
 .env.local
 .env.*.local
 
+# 运行期数据（下载缓存与临时文件）
+data/
+
 # 其他
 API-response.txt
-external/

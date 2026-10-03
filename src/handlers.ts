@@ -1,11 +1,14 @@
+/**
+ * 交互流程：搜索结果展示、分页翻页、下载确认与结果发送。
+ */
 import { Session, h } from 'koishi'
-import { Config } from './config'
+import type { Config } from './config'
 import { logger, bufferToDataURI, sleep, getErrorMessage } from './utils'
-import { Gallery, SearchResult, Tag, MenuGallery } from './types'
+import type { SearchResult, Tag, MenuGallery } from './types'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
-import { FORWARD_SUPPORTED_PLATFORMS, TAG_DISPLAY_LIMIT } from './constants'
+import { FORWARD_SUPPORTED_PLATFORMS, TAG_DISPLAY_LIMIT, type ValidSortOption } from './constants'
 import { readFile, rm } from 'fs/promises'
 import { pathToFileURL } from 'url'
 
@@ -17,7 +20,7 @@ export interface DownloadOptions {
 }
 
 export interface SearchOptions {
-  sort?: 'popular'
+  sort?: ValidSortOption
   lang?: 'chinese' | 'japanese' | 'english' | 'all'
 }
 
@@ -28,7 +31,7 @@ export interface SearchHandlerOptions {
   forwardSupportedPlatforms?: string[]
 }
 
-export const tagTypeDisplayMap: Record<Tag['type'], string> = {
+const tagTypeDisplayMap: Record<Tag['type'], string> = {
   parody: '原作',
   character: '角色',
   artist: '作者',
@@ -54,12 +57,12 @@ async function sendWithOptionalForward(
 }
 
 // 检查画廊是否被屏蔽
-export function isGalleryBlacklisted(gallery: MenuGallery): boolean {
+function isGalleryBlacklisted(gallery: MenuGallery): boolean {
   const searchGallery = gallery as any
   return searchGallery.blacklisted === true
 }
 
-export function formatGalleryInfo(
+function formatGalleryInfo(
   gallery: MenuGallery,
   displayIndex?: number,
   options: {
@@ -97,6 +100,10 @@ export function formatGalleryInfo(
   } else {
     const sg = gallery as any
     infoLines.push(`页数: ${sg.num_pages || 'N/A'}`)
+    // GalleryListItem 也带有 num_favorites，可直接展示
+    if (typeof sg.num_favorites === 'number') {
+      infoLines.push(`收藏: ${sg.num_favorites}`)
+    }
   }
 
   // 仅 Gallery 才有标签
@@ -131,7 +138,7 @@ export function formatGalleryInfo(
   return h('p', infoLines.join('\n'))
 }
 
-export function buildSearchQuery(
+function buildSearchQuery(
   query: string,
   lang: SearchOptions['lang'],
 ): string {
@@ -215,7 +222,6 @@ async function handlePagination(
     totalResults: number
   ) => Promise<void>,
   onDownload: (galleryId: string) => Promise<void>,
-  onCleanup?: () => void,
 ): Promise<void> {
   const state = createPaginationState(initialResult)
 
@@ -254,10 +260,12 @@ async function handlePagination(
       }
     }
 
-    // 计算实际的总结果数：只有1页时使用实际数量，多页时使用估算值
-    const totalResults = initialResult.num_pages === 1
-      ? initialResult.result.length
-      : initialResult.num_pages * initialResult.per_page
+    // 计算实际的总结果数：官方 /search 现在会直接返回 total，优先采用
+    const totalResults =
+      initialResult.total ??
+      (initialResult.num_pages === 1
+        ? initialResult.result.length
+        : initialResult.num_pages * initialResult.per_page)
 
     await displayHandler(displayedResults, startIndex, totalResults)
 
@@ -273,7 +281,6 @@ async function handlePagination(
     const reply = await session.prompt(config.promptTimeout * 1000)
     if (!reply) {
       await session.send('操作超时，已自动取消。')
-      if (onCleanup) onCleanup()
       break
     }
 
@@ -285,7 +292,6 @@ async function handlePagination(
       session,
       onDownload,
     ) === 'break') {
-      if (onCleanup) onCleanup()
       break
     }
   }
@@ -365,25 +371,20 @@ export async function handleRandomWithInteraction(
           const reply = await session.prompt(config.promptTimeout * 1000)
           if (!reply) {
             await session.send('操作超时，已自动取消。')
-            menuService.clearMenu(session)
             break
           }
 
           const lowerReply = reply.toLowerCase()
           if (lowerReply === 'y') {
-            menuService.clearMenu(session)
             await session.execute(`nh.download ${randomId}`)
             break
           } else if (lowerReply === 'f') {
-            menuService.clearMenu(session)
             await session.send('正在进行一次天降好运...')
             continue
           } else if (lowerReply === 'n') {
-            menuService.clearMenu(session)
             await session.send('操作已取消。')
             break
           } else {
-            menuService.clearMenu(session)
             await session.send('无效输入，操作已取消。')
             break
           }
@@ -584,10 +585,8 @@ export async function handleKeywordSearchWithMenu(
         await menuService.sendSearchMenu(session, displayedResults, totalResults, startIndex)
       },
       async (galleryId) => {
-        menuService.clearMenu(session)
         await session.execute(`nh.download ${galleryId}`)
       },
-      () => menuService.clearMenu(session),
     )
   } catch (error: any) {
     logger.error(`图片菜单处理失败: ${getErrorMessage(error)}`)
@@ -636,7 +635,8 @@ export async function handleKeywordSearch(
         : new Map()
       const messageNodes = displayedResults.map((gallery, index) => {
         const galleryInfoNode = formatGalleryInfo(gallery, index, { showTags, showLink })
-        const cover = covers.get(gallery.id as string)
+        // 缩略图 Map 的键统一为字符串（列表项 id 是数字，详情 id 是字符串）
+        const cover = covers.get(String(gallery.id))
         const messageNode = h('message', {}, galleryInfoNode)
         if (cover && cover.buffer && config.textMode.showThumbnails) {
           messageNode.children.push(h.image(bufferToDataURI(cover.buffer, `image/${cover.extension}`)))
@@ -658,11 +658,20 @@ export async function handleKeywordSearch(
   )
 }
 
+/**
+ * 任务完成提示里展示的作品名。
+ *
+ * PDF / ZIP 的 filename 带扩展名，逐张图片的 filename 是裸标题——
+ * 早期实现按 '.' 切分去扩展名，裸标题会被整段丢掉，任务完成提示就成了空。
+ */
+export function outputDisplayName(filename: string): string {
+  return filename.replace(/\.(pdf|zip)$/i, '')
+}
+
 export async function handleDownloadCommand(
   session: Session,
   id: string,
   options: DownloadOptions,
-  statusMessageId: string,
   nhentaiService: NhentaiService,
   config: Config,
   baseDir?: string,
@@ -679,7 +688,12 @@ export async function handleDownloadCommand(
       return
     }
 
-    let successMessage = `任务完成: ${result.filename.split('.').slice(0, -1).join('.')}`
+    // 只有 PDF / ZIP 带扩展名；逐张图片的 filename 是裸标题，不能按 '.' 切分
+    const displayName = outputDisplayName(result.filename)
+    let successMessage = `任务完成: ${displayName}`
+    if (result.type === 'images') {
+      successMessage += `（${result.images.length} 张）`
+    }
     if (['zip', 'pdf'].includes(result.type) && password) {
       successMessage += `\n密码: ${password}`
     }
@@ -701,17 +715,21 @@ export async function handleDownloadCommand(
           await session.send(h.file(result.buffer, 'application/zip', { title: result.filename }))
         } else {
           // file 模式：将 ZIP 保存为临时文件后发送文件路径
-          const { writeFile } = await import('fs/promises')
-          const { join, resolve } = await import('path')
+          const { writeFile, mkdir, rm: rmFile } = await import('fs/promises')
+          const { join, resolve, dirname } = await import('path')
           // 使用 baseDir 解析绝对路径，确保在 Docker 容器中正确工作
           const downloadDir = baseDir ? resolve(baseDir, config.downloadPath) : config.downloadPath
           const tempZipPath = join(downloadDir, `temp_${id}_${Date.now()}.zip`)
+          await mkdir(dirname(tempZipPath), { recursive: true })
           await writeFile(tempZipPath, result.buffer)
-          await session.send(h.file(pathToFileURL(tempZipPath).href, { title: result.filename }))
-          // 发送后立即删除临时文件
-          await rm(tempZipPath, { force: true }).catch(e => {
-            if (config.debug) logger.warn('删除临时 ZIP 文件失败: %o', e)
-          })
+          try {
+            await session.send(h.file(pathToFileURL(tempZipPath).href, { title: result.filename }))
+          } finally {
+            // 无论发送成功与否都清理，避免失败时残留大文件
+            await rmFile(tempZipPath, { force: true }).catch((e) => {
+              if (config.debug) logger.warn('删除临时 ZIP 文件失败: %o', e)
+            })
+          }
         }
         break
 

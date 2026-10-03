@@ -1,13 +1,16 @@
-import { Gallery, MenuGallery } from '../types'
-import { Config } from '../config'
+/**
+ * 菜单渲染：搜索结果九宫格与作品详情卡片，输出 PNG。
+ */
+import type { Gallery, MenuGallery } from '../types'
+import type { Config } from '../config'
 import { logger } from '../utils'
-import { IMAGE_LOAD_TIMEOUT_MS } from '../constants'
-import { createCanvas, loadImage, Image, GlobalFonts } from '../processors/canvas-processor'
+import { IMAGE_LOAD_TIMEOUT_MS, MENU_BACKGROUND_COLOR, MENU_JPEG_QUALITY } from '../constants'
+import { createCanvas, Image, GlobalFonts } from '../processors/canvas-processor'
 
-// 菜单生成器配置接口
+// 菜单生成器配置接口：画布宽度由列数与缩略图宽度动态计算
 export interface MenuGeneratorOptions {
   columns: number, maxRows: number, thumbWidth: number, thumbHeight: number,
-  canvasWidth: number, titleFontSize: number, infoFontSize: number, indexFontSize: number,
+  titleFontSize: number, infoFontSize: number, indexFontSize: number,
   padding: number, gap: number
 }
 
@@ -16,7 +19,6 @@ const defaultOptions: MenuGeneratorOptions = {
   maxRows: 3,
   thumbWidth: 250,
   thumbHeight: 350,
-  canvasWidth: 900,
   titleFontSize: 32,
   infoFontSize: 18,
   indexFontSize: 24,
@@ -38,10 +40,9 @@ const CARD_STYLES = {
   cardBorder: '#3a3a3a',
   infoBg: '#1e1e1e',
   placeholderBg: '#151515',
-  canvasBg: '#121212',
   titleColor: '#ffffff',
   infoColor: '#b0b0b0',
-  placeholderColor: '#555555',
+  placeholderColor: '#9e9e9e',
   badgeSize: 36,
   badgeBg: '#e91e63',
   badgeBorder: 'rgba(255, 255, 255, 0.2)',
@@ -52,6 +53,8 @@ const CARD_STYLES = {
   tagText: '#e0e0e0',
   cardRadius: 10,
   infoAreaHeight: 140,
+  /** 搜索结果卡片只画标题与信息行，不需要标签行的空间 */
+  searchInfoAreaHeight: 100,
   lineHeight: 1.5,
   shadowColor: 'rgba(0, 0, 0, 0.5)',
   shadowBlur: 12,
@@ -129,24 +132,42 @@ export class MenuGenerator {
     return truncated === text ? text : truncated + ellipsis
   }
 
-  // 分行截断长标题
+  /**
+   * 分行截断长标题。
+   *
+   * 尽量在空格、连字符或中日文边界处断开：早期实现按字符数硬切，
+   * 会出现 "Han / ouyo me" 这样把单词劈成两半的排版。
+   */
   private splitLongTitle(ctx: any, title: string, maxLineWidth: number): { firstLine: string; secondLine: string } {
-    let firstLine = title, secondLine = ''
+    let firstLine = title
+    let secondLine = ''
     if (ctx.measureText(title).width <= maxLineWidth) return { firstLine, secondLine }
 
     let splitIndex = title.length
     while (splitIndex > 0 && ctx.measureText(title.substring(0, splitIndex)).width > maxLineWidth) {
       splitIndex--
     }
+    if (splitIndex <= 0) return { firstLine: this.truncateText(ctx, title, maxLineWidth), secondLine }
 
-    if (splitIndex > 0) {
-      firstLine = title.substring(0, splitIndex)
-      secondLine = title.substring(splitIndex)
-      if (ctx.measureText(secondLine).width > maxLineWidth) {
-        secondLine = this.truncateText(ctx, secondLine, maxLineWidth)
+    // 在断点前回溯到一个「可断处」：空格、连字符，或 CJK 字符之间
+    const isBreakChar = (char: string) => /[\s\-–—/、，。！？：；）】」]/.test(char)
+    const isWide = (char: string) => /[\u2E80-\u9FFF\uFF00-\uFFEF]/.test(char)
+    let breakAt = splitIndex
+    for (let i = splitIndex - 1; i > splitIndex - 16 && i > 0; i--) {
+      if (isBreakChar(title[i])) {
+        breakAt = i + 1
+        break
       }
-    } else {
-      firstLine = this.truncateText(ctx, title, maxLineWidth)
+      if (isWide(title[i]) && isWide(title[i - 1])) {
+        breakAt = i
+        break
+      }
+    }
+
+    firstLine = title.substring(0, breakAt).trimEnd()
+    secondLine = title.substring(breakAt).trimStart()
+    if (ctx.measureText(secondLine).width > maxLineWidth) {
+      secondLine = this.truncateText(ctx, secondLine, maxLineWidth)
     }
     return { firstLine, secondLine }
   }
@@ -180,52 +201,6 @@ export class MenuGenerator {
     return tags.slice(0, 2) // 最多显示2个额外标签
   }
 
-  // 绘制部分圆角矩形
-  private drawPartiallyRoundedRect(ctx: any, x: number, y: number, width: number, height: number, radius: number, corners: { tl: boolean, tr: boolean, br: boolean, bl: boolean }): void {
-    ctx.beginPath()
-
-    // Top-Left start
-    if (corners.tl) {
-      ctx.moveTo(x + radius, y)
-    } else {
-      ctx.moveTo(x, y)
-    }
-
-    // Top-Right
-    if (corners.tr) {
-      ctx.lineTo(x + width - radius, y)
-      ctx.arcTo(x + width, y, x + width, y + radius, radius)
-    } else {
-      ctx.lineTo(x + width, y)
-    }
-
-    // Bottom-Right
-    if (corners.br) {
-      ctx.lineTo(x + width, y + height - radius)
-      ctx.arcTo(x + width, y + height, x + width - radius, y + height, radius)
-    } else {
-      ctx.lineTo(x + width, y + height)
-    }
-
-    // Bottom-Left
-    if (corners.bl) {
-      ctx.lineTo(x + radius, y + height)
-      ctx.arcTo(x, y + height, x, y + height - radius, radius)
-    } else {
-      ctx.lineTo(x, y + height)
-    }
-
-    // Top-Left end
-    if (corners.tl) {
-      ctx.lineTo(x, y + radius)
-      ctx.arcTo(x, y, x + radius, y, radius)
-    } else {
-      ctx.lineTo(x, y)
-    }
-
-    ctx.closePath()
-  }
-
   // 绘制标签
   private drawTag(
     ctx: any,
@@ -237,7 +212,7 @@ export class MenuGenerator {
   ): number {
     // 增大标签字体
     const fontSize = this.options.infoFontSize - 4
-    ctx.font = `${fontSize}px Arial, sans-serif`
+    ctx.font = `${fontSize}px ${CJK_FONT_FAMILY}`
     const paddingX = 10
     const paddingY = 5
     const textMetrics = ctx.measureText(text)
@@ -278,10 +253,11 @@ export class MenuGenerator {
     thumbnail: Buffer,
     index: number,
     x: number,
-    y: number
+    y: number,
+    infoHeight: number,
   ): Promise<void> {
     const { thumbWidth, thumbHeight, infoFontSize, indexFontSize } = this.options
-    const cardHeight = thumbHeight + CARD_STYLES.infoAreaHeight
+    const cardHeight = thumbHeight + infoHeight
 
     // 绘制卡片阴影和背景
     ctx.save()
@@ -313,35 +289,21 @@ export class MenuGenerator {
       ctx.restore()
 
       ctx.fillStyle = CARD_STYLES.placeholderColor
-      ctx.font = `${infoFontSize}px Arial, sans-serif`
+      ctx.font = `${infoFontSize}px ${CJK_FONT_FAMILY}`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillText('无缩略图', x + thumbWidth / 2, y + thumbHeight / 2)
     } else {
       try {
-        // 使用 Data URL 加载图片，避免 Buffer 兼容性问题
+        // 直接把 Buffer 交给 canvas 解码，省掉 base64 的额外拷贝
         const img = new Image()
-
-        // 简单的 MIME 检测
-        let mime = 'image/jpeg'
-        if (thumbnail.length > 12) {
-          const header = thumbnail.slice(0, 4).toString('ascii')
-          const webpSig = thumbnail.slice(8, 12).toString('ascii')
-          if (header === 'RIFF' && webpSig === 'WEBP') {
-            mime = 'image/webp'
-          }
-        }
-        if (thumbnail.length > 4 && thumbnail[0] === 0x89 && thumbnail[1] === 0x50 && thumbnail[2] === 0x4E && thumbnail[3] === 0x47) {
-          mime = 'image/png'
-        }
-
-        img.src = `data:${mime};base64,${thumbnail.toString('base64')}`
+        img.src = thumbnail
 
         // 添加超时保护防止图片加载挂起
         await Promise.race([
           new Promise<void>((resolve, reject) => {
             img.onload = () => resolve()
-            img.onerror = (err) => reject(new Error('Image load failed'))
+            img.onerror = () => reject(new Error('Image load failed'))
           }),
           new Promise<void>((_, reject) => {
             setTimeout(() => reject(new Error('Image load timeout')), IMAGE_LOAD_TIMEOUT_MS)
@@ -408,7 +370,7 @@ export class MenuGenerator {
         ctx.stroke()
 
         ctx.fillStyle = CARD_STYLES.badgeText
-        ctx.font = `bold ${indexFontSize - 2}px Arial, sans-serif`
+        ctx.font = `bold ${indexFontSize - 2}px ${CJK_FONT_FAMILY}`
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText(`${index}`, badgeX, badgeY + 1)
@@ -425,7 +387,7 @@ export class MenuGenerator {
         ctx.restore()
 
         ctx.fillStyle = CARD_STYLES.placeholderColor
-        ctx.font = `${infoFontSize}px Arial, sans-serif`
+        ctx.font = `${infoFontSize}px ${CJK_FONT_FAMILY}`
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText('加载失败', x + thumbWidth / 2, y + thumbHeight / 2)
@@ -464,7 +426,8 @@ export class MenuGenerator {
       const sg = gallery as any
       title = sg.english_title || sg.japanese_title || `ID ${sg.id}`
       pages = sg.num_pages || '?'
-      fav = '?'
+      // GalleryListItem 自带 num_favorites，可直接展示收藏数
+      fav = typeof sg.num_favorites === 'number' ? this.formatCount(sg.num_favorites) : '?'
     } else {
       const fg = gallery as any
       title = fg.title?.pretty || fg.title?.english || `ID ${fg.id}`
@@ -515,7 +478,7 @@ export class MenuGenerator {
       // 2. 重要标签 (Parody / Artist)
       const importantTags = this.getImportantTags(gallery as any)
       const fontSize = this.options.infoFontSize - 4
-      ctx.font = `${fontSize}px Arial, sans-serif`
+      ctx.font = `${fontSize}px ${CJK_FONT_FAMILY}`
       const paddingX = 10
 
       for (const tag of importantTags) {
@@ -552,7 +515,12 @@ export class MenuGenerator {
     const rows = Math.ceil(displayCount / columns)
     const headerHeight = 80
     const footerHeight = 65 // 增加底部高度以容纳完整提示信息
-    const cardHeight = thumbHeight + CARD_STYLES.infoAreaHeight // 确保与实际绘制高度一致
+    // 搜索结果都是列表项（无标签行），按较矮的信息区计算；混入完整画廊时保留完整高度
+    const hasTags = galleries
+      .slice(0, displayCount)
+      .some((item) => typeof (item as any).thumbnail !== 'string')
+    const infoHeight = hasTags ? CARD_STYLES.infoAreaHeight : CARD_STYLES.searchInfoAreaHeight
+    const cardHeight = thumbHeight + infoHeight
 
     // 动态计算画布宽度：根据列数自适应
     const totalCardsWidth = columns * thumbWidth + (columns - 1) * gap
@@ -563,8 +531,8 @@ export class MenuGenerator {
     const canvas = createCanvas(canvasWidth, canvasHeight)
     const ctx = canvas.getContext('2d')
 
-    // 绘制纯黑背景
-    ctx.fillStyle = '#000000'
+    // 画布背景
+    ctx.fillStyle = MENU_BACKGROUND_COLOR
     ctx.fillRect(0, 0, canvasWidth, canvasHeight)
 
     // 绘制顶部标题
@@ -593,7 +561,7 @@ export class MenuGenerator {
     for (let i = 0; i < displayCount; i++) {
       const row = Math.floor(i / columns), col = i % columns
       const x = startX + col * (thumbWidth + gap), y = startY + row * (cardHeight + gap)
-      await this.drawGalleryCard(ctx, galleries[i], thumbnails[i], i + 1, x, y)
+      await this.drawGalleryCard(ctx, galleries[i], thumbnails[i], i + 1, x, y, infoHeight)
     }
 
     // 绘制底部提示
@@ -609,8 +577,8 @@ export class MenuGenerator {
     ctx.fillStyle = '#b0b0b0'
     ctx.fillText('支持翻页 [F/B] 和退出 [N] 操作', canvasWidth / 2, footerY + 24)
 
-    // 输出为 PNG Buffer
-    return canvas.toBuffer('image/png')
+    // 输出 JPEG：实测体积约为 PNG 的三分之一，编码耗时约为七分之一
+    return Buffer.from(await canvas.encode('jpeg', MENU_JPEG_QUALITY))
   }
 
   // 格式化数字为 K/M 格式
@@ -631,18 +599,7 @@ export class MenuGenerator {
     let imgAspect = 0.7 // 默认纵横比
     try {
       img = new Image()
-      let mime = 'image/jpeg'
-      if (coverImage.length > 12) {
-        const header = coverImage.slice(0, 4).toString('ascii')
-        const webpSig = coverImage.slice(8, 12).toString('ascii')
-        if (header === 'RIFF' && webpSig === 'WEBP') {
-          mime = 'image/webp'
-        }
-      }
-      if (coverImage.length > 4 && coverImage[0] === 0x89 && coverImage[1] === 0x50 && coverImage[2] === 0x4E && coverImage[3] === 0x47) {
-        mime = 'image/png'
-      }
-      img.src = `data:${mime};base64,${coverImage.toString('base64')}`
+      img.src = coverImage
 
       await new Promise<void>((resolve, reject) => {
         img.onload = () => resolve()
@@ -716,8 +673,8 @@ export class MenuGenerator {
       ctx.fillStyle = '#252525'
       this.drawRoundedRect(ctx, padding, padding, coverWidth, 560, 8)
       ctx.fill()
-      ctx.fillStyle = '#555'
-      ctx.font = '24px Arial'
+      ctx.fillStyle = CARD_STYLES.placeholderColor
+      ctx.font = `24px ${CJK_FONT_FAMILY}`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillText('无封面', padding + coverWidth / 2, padding + 280)
@@ -730,7 +687,7 @@ export class MenuGenerator {
 
     // ID Badge
     const idText = `# ${gallery.id}`
-    ctx.font = 'bold 22px Arial'
+    ctx.font = `bold 22px ${CJK_FONT_FAMILY}`
     const idWidth = ctx.measureText(idText).width + 24
 
     ctx.fillStyle = '#e91e63'
@@ -747,7 +704,7 @@ export class MenuGenerator {
         const categoryTag = gallery.tags.find(t => t.type === 'category')
         if (categoryTag) {
             const catText = categoryTag.name.toUpperCase()
-            ctx.font = 'bold 16px Arial'
+            ctx.font = `bold 16px ${CJK_FONT_FAMILY}`
             const catWidth = ctx.measureText(catText).width + 24
             const catX = infoX + idWidth + 12
 
@@ -807,6 +764,16 @@ export class MenuGenerator {
 
     // Favorites
     ctx.fillText(`收藏: ${gallery.num_favorites}`, metaX, currentY)
+    metaX += ctx.measureText(`收藏: ${gallery.num_favorites}`).width + 30
+
+    // Scanlator：汉化组/扫描组，接口给了这个字段但此前一直没展示
+    const scanlator = (gallery as any).scanlator
+    if (scanlator && typeof scanlator === 'string') {
+        const scanlatorText = `汉化: ${this.truncateText(ctx, scanlator, infoWidth - (metaX - infoX) - 10)}`
+        if (metaX + ctx.measureText(scanlatorText).width <= infoX + infoWidth) {
+            ctx.fillText(scanlatorText, metaX, currentY)
+        }
+    }
 
     currentY += 30
 
@@ -848,22 +815,14 @@ export class MenuGenerator {
         const tagHeight = 28
         const tagGap = 8
         const textPaddingX = 10
-        const textGap = 8
 
         for (const tag of tags) {
            const tagName = tag.name
-           const tagCount = this.formatCount(tag.count)
 
-           // 测量宽度
+           // 只画标签名：每枚标签都带一个计数会让整块看起来像表格，且挤占一行能放的标签数
            ctx.font = `bold 14px ${CJK_FONT_FAMILY}`
            const nameWidth = ctx.measureText(tagName).width
-           ctx.font = `12px Arial`
-           const countWidth = ctx.measureText(tagCount).width
-
-           // 计算两部分宽度
-           const leftWidth = textPaddingX + nameWidth + textGap / 2
-           const rightWidth = textGap / 2 + countWidth + textPaddingX
-           const tagWidth = leftWidth + rightWidth
+           const tagWidth = nameWidth + textPaddingX * 2
 
            if (currentTagX + tagWidth > canvasWidth - padding) {
               currentTagX = infoX + labelWidth
@@ -871,28 +830,16 @@ export class MenuGenerator {
               if (currentTagY > canvasHeight - 80) break // 防止溢出
            }
 
-           // Tag Background - Left (Name)
            ctx.fillStyle = '#3e3e3e'
-           this.drawPartiallyRoundedRect(ctx, currentTagX, currentTagY, leftWidth, tagHeight, 4, { tl: true, tr: false, br: false, bl: true })
+           this.drawRoundedRect(ctx, currentTagX, currentTagY, tagWidth, tagHeight, 4)
            ctx.fill()
 
-           // Tag Background - Right (Count)
-           ctx.fillStyle = '#222222'
-           this.drawPartiallyRoundedRect(ctx, currentTagX + leftWidth, currentTagY, rightWidth, tagHeight, 4, { tl: false, tr: true, br: true, bl: false })
-           ctx.fill()
-
-           // Tag Name
            ctx.fillStyle = '#eeeeee'
            ctx.font = `bold 14px ${CJK_FONT_FAMILY}`
            ctx.textAlign = 'left'
            ctx.textBaseline = 'middle'
            const textY = currentTagY + tagHeight / 2 - 1 // 微调垂直居中
            ctx.fillText(tagName, currentTagX + textPaddingX, textY)
-
-           // Tag Count
-           ctx.fillStyle = '#aaaaaa'
-           ctx.font = `12px Arial`
-           ctx.fillText(tagCount, currentTagX + leftWidth + textGap / 2, textY)
 
            currentTagX += tagWidth + tagGap
         }
@@ -912,7 +859,7 @@ export class MenuGenerator {
       : '回复 [Y] 下载 · [N] 取消'
     ctx.fillText(promptText, canvasWidth / 2, canvasHeight - 20)
 
-    return canvas.toBuffer('image/png')
+    return Buffer.from(await canvas.encode('jpeg', MENU_JPEG_QUALITY))
   }
 
   // 解析标题结构

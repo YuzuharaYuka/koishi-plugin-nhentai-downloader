@@ -1,4 +1,7 @@
-import { Config } from '../config'
+/**
+ * 对外服务：把接口层与处理器组装成「查画廊、取封面、下载」三件事。
+ */
+import type { Config } from '../config'
 import { logger, getErrorMessage } from '../utils'
 import { DEFAULT_THUMB_CDN, COVER_DOWNLOAD_TIMEOUT_MS } from '../constants'
 import { Processor } from '../processor'
@@ -45,6 +48,11 @@ export type DownloadOutput =
   | { type: 'zip'; buffer: Buffer; filename: string }
   | { type: 'images'; images: DownloadedImage[]; filename: string; failedIndexes: number[] }
 
+interface CdnServers {
+  image: string[]
+  thumb: string[]
+}
+
 export class CoverService {
   constructor(
     private config: Config,
@@ -52,36 +60,41 @@ export class CoverService {
     private processor: Processor,
   ) {}
 
-  private async buildThumbUrl(gallery: Partial<Gallery>): Promise<string | null> {
-    // 优先缩略图，回退到封面
-    const thumb = gallery.images?.thumbnail || (gallery as any).thumbnail
-    const cover = gallery.images?.cover || (gallery as any).cover
-
-    const path = (thumb as any)?.path || (cover as any)?.path
-    if (!path) return null
-
-    try {
-      const cdnServers = await this.apiService.getCdnServers()
-      // 缩略图使用 thumb 服务器
-      const host = cdnServers.thumb && cdnServers.thumb.length > 0 ? cdnServers.thumb[0] : DEFAULT_THUMB_CDN
-      return `https://${host}/${path}`
-    } catch (e) {
-      return `https://${DEFAULT_THUMB_CDN}/${path}`
-    }
+  /** 用缩略图主机拼出缩略图 URL（失败时由 downloadImage 切换到其余缩略图主机） */
+  private buildThumbUrl(path: string, servers: CdnServers): string {
+    const host = servers.thumb[0] || DEFAULT_THUMB_CDN
+    return `https://${host}/${path}`
   }
 
-  private async processDownloadResult(result: any, galleryId: string): Promise<{ buffer: Buffer; extension: string } | null> {
+  /**
+   * 列表项（SearchGallery）只有字符串 thumbnail，详情（Gallery）同时有 thumbnail 与 cover。
+   *
+   * 详情卡片按 400×600 显示，thumbnail 是 250×350（放大约 1.6 倍），
+   * cover 是 350×490（放大约 1.2 倍），所以单张封面优先取 cover 更清晰。
+   */
+  private resolveThumbPath(gallery: MenuGallery, prefer: 'thumb' | 'cover' = 'thumb'): string | null {
+    if (typeof (gallery as any).thumbnail === 'string') {
+      return (gallery as SearchGallery).thumbnail || null
+    }
+    const fullGallery = gallery as Gallery
+    const thumb = fullGallery.images?.thumbnail?.path
+    const cover = fullGallery.images?.cover?.path
+    return prefer === 'cover' ? cover || thumb || null : thumb || cover || null
+  }
+
+  private async processDownloadResult(
+    result: any,
+    galleryId: string,
+  ): Promise<{ buffer: Buffer; extension: string } | null> {
     try {
       if (!('buffer' in result)) {
         // 检查是否是错误对象
         if ('error' in result && result.error instanceof Error) {
           logger.warn(`画廊 ${galleryId} 缩略图下载失败: ${result.error.message}`)
+        } else if (this.config.debug) {
+          logger.warn(`画廊 ${galleryId} 下载结果无 buffer 属性: ${JSON.stringify(Object.keys(result))}`)
         } else {
-          if (this.config.debug) {
-            logger.warn(`画廊 ${galleryId} 下载结果无 buffer 属性: ${JSON.stringify(Object.keys(result))}`)
-          } else {
-            logger.warn(`画廊 ${galleryId} 下载结果无效（无 buffer 属性）`)
-          }
+          logger.warn(`画廊 ${galleryId} 下载结果无效（无 buffer 属性）`)
         }
         return null
       }
@@ -96,8 +109,9 @@ export class CoverService {
         return null
       }
 
-      const processed = await this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`, true)
-      const extension = processed.format === 'original' ? result.extension : (processed.format === 'webp' ? 'webp' : (processed.format === 'png' ? 'png' : 'jpg'))
+      // 缩略图只用于菜单预览：加完水印用 webp 低质量输出，避免体积翻几倍
+      const processed = await this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`, 'webp', 80)
+      const extension = processed.format === 'original' ? result.extension : processed.format
       return { buffer: processed.buffer, extension }
     } catch (error) {
       const errorMsg = getErrorMessage(error)
@@ -110,27 +124,40 @@ export class CoverService {
     }
   }
 
-  async downloadCover(
-    gallery: Gallery,
+  /** 下载单张缩略图；servers 由调用方批量获取一次后复用 */
+  private async fetchCover(
+    gallery: MenuGallery,
+    servers: CdnServers,
+    timeoutMs?: number,
+    prefer: 'thumb' | 'cover' = 'thumb',
   ): Promise<{ buffer: Buffer; extension: string } | null> {
+    const galleryId = String(gallery.id)
+    const path = this.resolveThumbPath(gallery, prefer)
+    if (!path) {
+      if (this.config.debug) logger.debug(`画廊 ${galleryId} 缺少缩略图或封面`)
+      return null
+    }
+
+    const download = this.processor.downloadImage({
+      http: this.apiService.imageHttp,
+      url: this.buildThumbUrl(path, servers),
+      index: 0,
+      galleryId,
+      mediaId: String(gallery.media_id),
+      retries: Math.min(this.config.downloadRetries, 3),
+      fallbackHosts: servers.thumb,
+      onHostResult: (host, ok, latencyMs) => this.apiService.reportCdnResult(host, ok, latencyMs),
+    })
+
+    const result = timeoutMs ? await downloadWithTimeout(download, timeoutMs, '缩略图下载超时') : await download
+    return this.processDownloadResult(result, galleryId)
+  }
+
+  async downloadCover(gallery: Gallery): Promise<{ buffer: Buffer; extension: string } | null> {
     try {
-      const thumbUrl = await this.buildThumbUrl(gallery)
-      if (!thumbUrl) {
-        if (this.config.debug) logger.debug(`画廊 ${gallery.id} 缺少缩略图或封面`)
-        return null
-      }
-
-      if (!this.apiService.imageGot) throw new Error('imageGot 服务未初始化')
-      const result = await this.processor.downloadImage(
-        this.apiService.imageGot,
-        thumbUrl,
-        0,
-        gallery.id,
-        gallery.media_id,
-        1,
-      )
-
-      return this.processDownloadResult(result, gallery.id)
+      const servers = await this.apiService.getCdnServers()
+      // 单张封面用于详情卡片，取分辨率更高的 cover
+      return await this.fetchCover(gallery, servers, undefined, 'cover')
     } catch (e) {
       const errorMsg = getErrorMessage(e)
       logger.warn(`下载画廊 ${gallery.id} 的缩略图失败: ${errorMsg}`)
@@ -144,6 +171,15 @@ export class CoverService {
     const covers = new Map<string, { buffer: Buffer; extension: string }>()
     if (galleries.length === 0) return covers
 
+    // 一次性取得 CDN 配置（内部有缓存），避免在每个 worker 循环里反复 await
+    let servers: CdnServers
+    try {
+      servers = await this.apiService.getCdnServers()
+    } catch (error) {
+      logger.warn(`获取 CDN 配置失败，缩略图将使用默认主机: ${getErrorMessage(error)}`)
+      servers = { image: [], thumb: [DEFAULT_THUMB_CDN] }
+    }
+
     const galleryQueue = [...galleries]
     const concurrency = Math.min(Math.min(this.config.downloadConcurrency, 10), galleries.length)
 
@@ -155,53 +191,14 @@ export class CoverService {
           if (!gallery?.id || !gallery?.media_id) continue
 
           try {
-            const isSearchGallery = typeof (gallery as any).thumbnail === 'string'
-            let thumbUrl: string | null = null
-            let galleryId: string
-
-            if (isSearchGallery) {
-              const searchGallery = gallery as SearchGallery
-              galleryId = String(searchGallery.id)
-              const thumbPath = searchGallery.thumbnail
-              if (thumbPath) {
-                // 使用 CDN 配置
-                const cdnServers = await this.apiService.getCdnServers()
-                const host = cdnServers.thumb && cdnServers.thumb.length > 0 ? cdnServers.thumb[0] : DEFAULT_THUMB_CDN
-                thumbUrl = `https://${host}/${thumbPath}`
-              }
-            } else {
-              const fullGallery = gallery as Gallery
-              galleryId = fullGallery.id
-              thumbUrl = await this.buildThumbUrl(fullGallery)
-            }
-
-            if (!thumbUrl) {
-              if (this.config.debug) {
-                logger.debug(`画廊 ${galleryId} 无有效的缩略图路径，跳过`)
-              }
-              continue
-            }
-
-            // 使用带超时控制的下载，确保定时器被正确清理
-            if (!this.apiService.imageGot) throw new Error('imageGot 服务未初始化')
-            const downloadPromise = this.processor.downloadImage(
-              this.apiService.imageGot,
-              thumbUrl,
-              0,
-              galleryId,
-              String(gallery.media_id),
-              1,
-            )
-
-            const result = await downloadWithTimeout(downloadPromise, COVER_DOWNLOAD_TIMEOUT_MS, '缩略图下载超时')
-            const processed = await this.processDownloadResult(result, galleryId)
+            const processed = await this.fetchCover(gallery, servers, COVER_DOWNLOAD_TIMEOUT_MS)
             if (processed) {
-              covers.set(galleryId, processed)
+              covers.set(String(gallery.id), processed)
             }
           } catch (itemError) {
             const errorMsg = getErrorMessage(itemError)
             logger.warn(`处理画廊 ${gallery?.id} 缩略图时出错: ${errorMsg}`)
-            // 继续处理下一个,不中断整个队列
+            // 继续处理下一个，不中断整个队列
           }
         }
       } catch (workerError) {
@@ -227,7 +224,7 @@ export class NhentaiService {
   constructor(
     private apiService: ApiService,
     private config: Config,
-    private processor: Processor,
+    processor: Processor,
   ) {
     this.coverService = new CoverService(config, apiService, processor)
     this.downloadManager = new DownloadManager(config, apiService, processor)

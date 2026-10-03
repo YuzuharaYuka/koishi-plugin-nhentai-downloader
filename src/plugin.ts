@@ -1,5 +1,8 @@
+/**
+ * 插件生命周期：按顺序装配接口、处理器、下载与菜单服务，并负责释放。
+ */
 import { Context, Session } from 'koishi'
-import { Config } from './config'
+import type { Config } from './config'
 import { logger } from './utils'
 import { Processor, initCanvasProcessor } from './processor'
 import { ApiService } from './services/api'

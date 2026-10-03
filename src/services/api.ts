@@ -1,726 +1,690 @@
+/**
+ * 接口层。
+ *
+ * 统一负责端点封装、按官方配额的客户端限流、内存缓存与错误归类；
+ * 出错一律返回 null，由调用方决定降级方式。
+ */
 import { Context } from 'koishi'
-import { Config } from '../config'
-import { logger, importESM, logError, getErrorMessage } from '../utils'
-import { API_BASE, CDN_CONFIG_TTL_MS, DEFAULT_IMAGE_CDN, DEFAULT_THUMB_CDN } from '../constants'
-import { Gallery, SearchResult } from '../types'
+import type { Config } from '../config'
+import { logger, getErrorMessage, sleep } from '../utils'
+import {
+  API_BASE,
+  API_MAX_CONCURRENCY,
+  API_RATE_LIMITS,
+  API_REQUEST_TIMEOUT_MS,
+  CDN_CONFIG_TTL_MS,
+  DEFAULT_IMAGE_CDN,
+  DEFAULT_THUMB_CDN,
+  DOWNLOAD_FORMATS,
+  GALLERY_INCLUDES,
+  RATE_LIMIT_SAFETY_FACTOR,
+  SORT_ALIASES,
+  VALID_SORT_OPTIONS,
+  type DownloadFormat,
+  type GalleryInclude,
+  type RateLimitKey,
+  type RateLimitRule,
+  type ValidSortOption,
+} from '../constants'
+import type {
+  ApiAppConfig,
+  ApiDownloadResponse,
+  ApiGalleryDetail,
+  ApiGalleryListItem,
+  ApiPaginated,
+  ApiRandomGallery,
+  ApiRelatedGalleries,
+  ApiTag,
+  ApiValidationError,
+  Gallery,
+  SearchGallery,
+  SearchResult,
+  Tag,
+} from '../types'
 import { InMemoryCache } from './cache'
-import type { GotScraping } from 'got-scraping'
-import { Agent as HttpAgent } from 'http'
-import { Agent as HttpsAgent } from 'https'
+import { HttpManager } from './http'
+import { Semaphore, SlidingWindowRateLimiter } from './rate-limiter'
 
-let gotScraping: GotScraping
-
-export class GotManager {
-  public apiGot: GotScraping | null = null
-  public imageGot: GotScraping | null = null
-  private initialized = false
-  private sessionTokens: Map<string, object> = new Map()
-
-  constructor(private config: Config) {}
-
-  async initialize(): Promise<void> {
-    if (this.initialized) return
-    // 动态导入 got-scraping 模块
-    if (!gotScraping) {
-      const module = await importESM<{ gotScraping: GotScraping }>('got-scraping')
-      gotScraping = module.gotScraping || (module as any)
-    }
-
-    this.apiGot = await this.createApiGotInstance()
-    this.imageGot = await this.createImageGotInstance()
-    this.initialized = true
-
-    if (this.config.debug) logger.info('Got 初始化完成')
-  }
-
-  private async createApiGotInstance(): Promise<GotScraping> {
-    const downloadTimeoutMs = this.config.downloadTimeout * 1000
-    const agentOptions = {
-      keepAlive: true,
-      keepAliveMsecs: 30000,
-      maxSockets: 50,
-      maxFreeSockets: 10,
-      timeout: downloadTimeoutMs,
-      scheduling: 'lifo' as const,
-    }
-    // 配置 HTTPS Agent，禁用证书验证和设置最低 TLS 版本
-    const httpsAgent = new HttpsAgent({
-      ...agentOptions,
-      rejectUnauthorized: false,
-      minVersion: 'TLSv1.2' as any,
-    })
-    const httpAgent = new HttpAgent(agentOptions)
-
-    const instanceOptions: any = {
-      timeout: { request: downloadTimeoutMs, connect: 10000, secureConnect: 10000 },
-      retry: {
-        limit: this.config.downloadRetries,
-        methods: ['GET', 'POST'],
-        statusCodes: [408, 413, 429, 500, 502, 503, 504, 521, 522, 524],
-      },
-      https: { rejectUnauthorized: false },
-      headerGeneratorOptions: {
-        browsers: [
-          {
-            name: 'chrome',
-            minVersion: 120,
-            maxVersion: 131,
-          },
-          {
-            name: 'edge',
-            minVersion: 120,
-            maxVersion: 131,
-          },
-        ],
-        devices: ['desktop'],
-        locales: ['en-US', 'zh-CN', 'ja-JP'],
-        operatingSystems: ['windows', 'macos'],
-      },
-      agent: { http: httpAgent, https: httpsAgent },
-    }
-
-    // User-Agent 格式：AppName/version (URL)
-    const userAgent = 'koishi-plugin-nhentai-downloader/v2 (https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader)'
-
-    instanceOptions.headers = {
-      'User-Agent': userAgent,
-      'Accept': 'application/json',
-    }
-
-    // API Key 认证（使用 "Key" 而非 "Bearer"）
-    if (this.config.apiKey) {
-      instanceOptions.headers.authorization = `Key ${this.config.apiKey}`
-    }
-
-    const instance = gotScraping.extend(instanceOptions as any)
-
-    return this.config.proxy ? instance.extend({ proxyUrl: this.config.proxy } as any) : instance
-  }
-
-  private async createImageGotInstance(): Promise<GotScraping> {
-    if (!this.apiGot) throw new Error('GotManager: apiGot 必须先初始化')
-
-    const downloadTimeoutMs = this.config.downloadTimeout * 1000
-    const agentOptions = {
-      keepAlive: true,
-      keepAliveMsecs: 30000,
-      maxSockets: 100,
-      maxFreeSockets: 20,
-      timeout: downloadTimeoutMs,
-      scheduling: 'lifo' as const,
-    }
-    // 图片下载用的 Agent，连接数更多
-    const imageHttpsAgent = new HttpsAgent({
-      ...agentOptions,
-      rejectUnauthorized: false,
-      minVersion: 'TLSv1.2' as any,
-    })
-    const imageHttpAgent = new HttpAgent(agentOptions)
-
-    return this.apiGot.extend({
-      responseType: 'buffer',
-      timeout: { request: downloadTimeoutMs, connect: 10000, secureConnect: 10000 },
-      retry: {
-        limit: Math.min(this.config.downloadRetries, 2),
-        methods: ['GET'],
-        statusCodes: [408, 429, 500, 502, 503, 504, 521, 522, 524],
-      },
-      agent: { http: imageHttpAgent, https: imageHttpsAgent },
-    } as any)
-  }
-
-  getSessionToken(galleryId: string): object {
-    if (!this.sessionTokens.has(galleryId)) {
-      this.sessionTokens.set(galleryId, {})
-    }
-    return this.sessionTokens.get(galleryId)!
-  }
-
-  clearSessionToken(galleryId: string): void {
-    this.sessionTokens.delete(galleryId)
-  }
-
-  dispose(): void {
-    const destroyAgent = (gotInstance: GotScraping | null) => {
-      const agent = (gotInstance as any)?.defaults?.options?.agent
-      if (agent) {
-        agent.http?.destroy()
-        agent.https?.destroy()
-      }
-    }
-    // 销毁两个 Got 实例的连接池
-    destroyAgent(this.apiGot)
-    destroyAgent(this.imageGot)
-
-    this.apiGot = null
-    this.imageGot = null
-    this.sessionTokens.clear()
-    this.initialized = false
-
-    if (this.config.debug) logger.info('Got 实例已释放')
-  }
+/** CDN 主机健康度 */
+interface CdnHostHealth {
+  failures: number
+  cooldownUntil: number
+  /** 指数加权平均延迟 */
+  latencyMs: number
+  samples: number
 }
+
+export interface ApiMetrics {
+  /** 真实发出的 HTTP 请求数（不含缓存命中） */
+  requests: number
+  cacheHits: number
+  errors: number
+  retries: number
+  rateLimitPenalties: number
+}
+
+// ============================================================
+// API 服务
+// ============================================================
+
+/** 把命令行/配置里的排序写法归一化为官方枚举值 */
+export function normalizeSortOption(sort?: string | null): ValidSortOption | undefined {
+  if (!sort) return undefined
+  const value = sort.trim().toLowerCase()
+  if (!value) return undefined
+  if ((VALID_SORT_OPTIONS as readonly string[]).includes(value)) return value as ValidSortOption
+  return SORT_ALIASES[value]
+}
+
+/** 值得重试的状态码（429 单独处理） */
+const RETRYABLE_STATUS = new Set([408, 413, 500, 502, 503, 504, 521, 522, 524])
 
 export class ApiService {
   private cache: InMemoryCache | null = null
-  private gotManager: GotManager
-  // CDN 配置缓存 - 分别存储图片和缩略图服务器
-  private cdnImageServers: string[] | null = null
-  private cdnThumbServers: string[] | null = null
-  private lastCdnUpdate = 0
-  // 速率限制和并发控制
-  private requestQueue: Array<() => Promise<any>> = []
-  private activeRequests = 0
-  private maxConcurrentRequests = 5
-  private rateLimitResetTime = 0
+  private http: HttpManager
+  private limiter: SlidingWindowRateLimiter
+  private apiGate: Semaphore
 
-  constructor(private ctx: Context, private config: Config) {
-    this.gotManager = new GotManager(config)
+  // CDN 配置缓存
+  private cdn: { image: string[]; thumb: string[] } | null = null
+  private lastCdnUpdate = 0
+  private cdnNextRetry = 0
+  private announcement: string | null = null
+  private hostHealth = new Map<string, CdnHostHealth>()
+
+  private metrics: ApiMetrics = { requests: 0, cacheHits: 0, errors: 0, retries: 0, rateLimitPenalties: 0 }
+
+  constructor(ctx: Context, private config: Config) {
+    this.http = new HttpManager(ctx, config)
+
+    // 按官方公布的限额建立逐端点配额（携带 API Key 时使用更高的一档）
+    const rules: Record<string, RateLimitRule> = {}
+    for (const [key, tiers] of Object.entries(API_RATE_LIMITS)) {
+      rules[key] = config.apiKey ? tiers.auth : tiers.anon
+    }
+    this.limiter = new SlidingWindowRateLimiter(rules, RATE_LIMIT_SAFETY_FACTOR)
+    this.apiGate = new Semaphore(API_MAX_CONCURRENCY)
   }
 
   async initialize(): Promise<void> {
-    await this.gotManager.initialize()
+    this.cache = new InMemoryCache({
+      maxSize: 500,
+      defaultTTL: this.config.cache.apiCacheTTL * 60_000,
+    })
+    logger.info(
+      `HTTP 传输层就绪（ctx.http）；缓存 TTL ${this.config.cache.apiCacheTTL} 分钟；` +
+        `限流档位：${this.config.apiKey ? 'API Key' : '匿名'}`,
+    )
   }
 
-  get imageGot() {
-    return this.gotManager.imageGot
+  /** 图片下载共用同一套请求头与传输层 */
+  get imageHttp(): HttpManager {
+    return this.http
   }
 
-  getSessionToken(galleryId: string): object {
-    return this.gotManager.getSessionToken(galleryId)
-  }
+  // ─── 缓存 ──────────────────────────────────────────────────
 
-  clearSessionToken(galleryId: string): void {
-    this.gotManager.clearSessionToken(galleryId)
-  }
-
-  /**
-   * 限制 API 请求并发数
-   */
-  private async executeWithRateLimit<T>(fn: () => Promise<T>): Promise<T> {
-    // 检查速率限制
-    if (this.rateLimitResetTime > Date.now()) {
-      const waitTime = Math.ceil((this.rateLimitResetTime - Date.now()) / 1000)
-      logger.warn(`API 速率限制，需等待 ${waitTime}s`)
-      await new Promise(resolve => setTimeout(resolve, this.rateLimitResetTime - Date.now()))
-    }
-
-    // 并发控制
-    while (this.activeRequests >= this.maxConcurrentRequests) {
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-
-    this.activeRequests++
-    try {
-      return await fn()
-    } finally {
-      this.activeRequests--
-    }
-  }
-
-  /**
-   * 处理速率限制响应
-   */
-  private handleRateLimit(headers: any): void {
-    const retryAfter = headers['retry-after']
-    if (retryAfter) {
-      let delayMs = 1000
-
-      if (/^\d+$/.test(retryAfter)) {
-        delayMs = parseInt(retryAfter, 10) * 1000
-      } else {
-        try {
-          const retryDate = new Date(retryAfter).getTime()
-          delayMs = Math.max(0, retryDate - Date.now())
-        } catch {}
-      }
-
-      this.rateLimitResetTime = Date.now() + Math.min(delayMs, 60000)
-      logger.warn(`API 速率限制，${Math.ceil((this.rateLimitResetTime - Date.now()) / 1000)}s 后恢复`)
-    }
-  }
-
-  private getCache(): InMemoryCache {
-    if (!this.cache) {
-      this.cache = new InMemoryCache({
-        maxSize: 500,
-        defaultTTL: this.config.cache.apiCacheTTL * 60 * 1000,
-      })
-      if (this.config.debug) logger.debug('API 缓存已初始化')
-    }
-    return this.cache
-  }
-
-  // 从缓存获取数据
   private async getCached<T>(key: string): Promise<T | null> {
-    if (!this.config.cache.enableApiCache) return null
-    const cached = await this.getCache().get<T>(key)
-    if (cached && this.config.debug) logger.debug(`命中缓存: ${key}`)
-    return cached || null
+    if (!this.config.cache.enableApiCache || !this.cache) return null
+    const cached = await this.cache.get<T>(key)
+    if (cached === undefined) return null
+    this.metrics.cacheHits++
+    if (this.config.debug) logger.debug(`命中缓存: ${key}`)
+    return cached
   }
 
-  // 保存数据到缓存
   private async setCached<T>(key: string, data: T): Promise<void> {
-    if (!this.config.cache.enableApiCache) return
-    await this.getCache().set(key, data, this.config.cache.apiCacheTTL * 60 * 1000)
+    if (!this.config.cache.enableApiCache || !this.cache) return
+    await this.cache.set(key, data, this.config.cache.apiCacheTTL * 60_000)
+  }
+
+  // ─── 请求执行 ──────────────────────────────────────────────
+
+  private buildUrl(path: string, query?: Record<string, string | number | undefined>): string {
+    const url = new URL(`${API_BASE}${path}`)
+    for (const [name, value] of Object.entries(query || {})) {
+      if (value === undefined || value === null || value === '') continue
+      url.searchParams.set(name, String(value))
+    }
+    return url.toString()
+  }
+
+  /** Retry-After 可能是秒数或 HTTP 日期；ctx.http 给出的响应头是 Headers 对象 */
+  private parseRetryAfter(headers: Headers | Record<string, unknown> | undefined): number {
+    let raw: string | null | undefined
+    if (headers && typeof (headers as Headers).get === 'function') {
+      raw = (headers as Headers).get('retry-after')
+    } else if (headers) {
+      const record = headers as Record<string, unknown>
+      raw = (record['retry-after'] ?? record['Retry-After']) as string | undefined
+    }
+    if (raw === undefined || raw === null) return 5000
+    const value = String(raw).trim()
+    if (/^\d+$/.test(value)) return Math.min(parseInt(value, 10) * 1000, 120_000)
+    const at = Date.parse(value)
+    if (!Number.isNaN(at)) return Math.min(Math.max(0, at - Date.now()), 120_000)
+    return 5000
   }
 
   /**
-   * 解析 Retry-After 响应头
+   * 统一请求入口：缓存 → 限流配额 → 并发闸门 → 429 退避 → 错误归类。
+   * 失败时返回 null，由调用方决定降级行为。
    */
-  private parseRetryAfter(headers: any): number {
-    const retryAfter = headers['retry-after']
-    if (!retryAfter) return 1000
+  private async request<T>(options: {
+    key: RateLimitKey
+    path: string
+    label: string
+    method?: 'GET' | 'POST'
+    query?: Record<string, string | number | undefined>
+    cacheKey?: string
+    /** 可选请求：配额不足时立即放弃（返回 null）而不是排队等待 */
+    optional?: boolean
+  }): Promise<T | null> {
+    const { key, path, label, method = 'GET', query, cacheKey, optional = false } = options
 
-    if (/^\d+$/.test(retryAfter)) {
-      return parseInt(retryAfter, 10) * 1000
+    if (cacheKey) {
+      const cached = await this.getCached<T>(cacheKey)
+      if (cached !== null) return cached
+    }
+
+    if (optional) {
+      if (!this.limiter.tryAcquire(key)) {
+        const remaining = this.limiter.cooldownRemaining(key)
+        logger.info(
+          `${label}: 客户端配额已用尽${remaining > 0 ? `（冷却 ${Math.ceil(remaining / 1000)}s）` : ''}，跳过本次可选请求`,
+        )
+        return null
+      }
+    } else {
+      await this.limiter.acquire(key, label)
     }
 
     try {
-      const retryDate = new Date(retryAfter).getTime()
-      const delay = Math.max(0, retryDate - Date.now())
-      return Math.min(delay, 60000)
-    } catch {
-      return 1000
+      const data = await this.apiGate.run(() => this.execute<T>(key, path, method, query, label, !optional))
+      if (cacheKey) await this.setCached(cacheKey, data)
+      return data
+    } catch (error) {
+      this.metrics.errors++
+      this.logRequestError(label, error)
+      return null
     }
   }
 
-  /**
-   * 分类 HTTP 错误
-   */
-  private parseHttpError(error: any, context: string): { code: number; message: string; isRetryable: boolean } {
-    if (!error.response) {
-      return {
-        code: 0,
-        message: context,
-        isRetryable: false,
+  private async execute<T>(
+    key: RateLimitKey,
+    path: string,
+    method: 'GET' | 'POST',
+    query: Record<string, string | number | undefined> | undefined,
+    label: string,
+    /** 可选请求不等待 Retry-After，直接失败以便上层降级 */
+    allowRateLimitRetry: boolean,
+  ): Promise<T> {
+    const url = this.buildUrl(path, query)
+    // 429 按 Retry-After 单独处理；其他可重试状态码与网络错误走指数退避
+    const rateLimitAttempts = allowRateLimitRetry ? 2 : 1
+    const maxAttempts = allowRateLimitRetry ? 3 : 1
+
+    for (let attempt = 1; ; attempt++) {
+      this.metrics.requests++
+      try {
+        return await this.http.json<T>(url, { method, timeoutMs: API_REQUEST_TIMEOUT_MS })
+      } catch (error) {
+        const status = this.statusOf(error)
+
+        if (status === 429) {
+          const retryAfterMs = this.parseRetryAfter(this.headersOf(error))
+          this.metrics.rateLimitPenalties++
+          this.limiter.penalize(key, retryAfterMs)
+          if (attempt < rateLimitAttempts) {
+            this.metrics.retries++
+            logger.warn(`${label}: 触发官方速率限制（${key}），${(retryAfterMs / 1000).toFixed(1)}s 后重试`)
+            await sleep(retryAfterMs)
+            continue
+          }
+          throw error
+        }
+
+        if ((status === undefined || RETRYABLE_STATUS.has(status)) && attempt < maxAttempts) {
+          this.metrics.retries++
+          const delayMs = Math.min(1000 * 2 ** (attempt - 1), 4000) + Math.floor(Math.random() * 200)
+          logger.debug(
+            `${label}: 第 ${attempt} 次请求失败（${status ?? getErrorMessage(error)}），${delayMs}ms 后重试`,
+          )
+          await sleep(delayMs)
+          continue
+        }
+        throw error
       }
     }
+  }
 
-    const status = error.response.status
-    let message = context
+  /** ctx.http 的错误对象上带有 response.status / response.headers */
+  private statusOf(error: unknown): number | undefined {
+    const status = (error as any)?.response?.status
+    return typeof status === 'number' ? status : undefined
+  }
 
-    switch (status) {
-      case 404:
-        message = `${context}：画廊不存在或已被删除`
-        logger.warn(message)
-        return { code: 404, message, isRetryable: false }
+  private headersOf(error: unknown): Headers | undefined {
+    const headers = (error as any)?.response?.headers
+    return headers && typeof headers.get === 'function' ? (headers as Headers) : undefined
+  }
 
-      case 403:
-        message = `${context}：画廊已被隐藏或无权访问`
-        logger.warn(message)
-        return { code: 403, message, isRetryable: false }
+  private logRequestError(label: string, error: unknown): void {
+    const status = this.statusOf(error)
+    const body = (error as any)?.response?.data
+    const apiMessage =
+      body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : undefined
 
-      case 429:
-        message = `${context}：触发 API 速率限制`
-        const retryAfter = this.parseRetryAfter(error.response.headers || {})
-        this.handleRateLimit(error.response.headers || {})
-        logger.warn(`${message} (建议等待 ${(retryAfter / 1000).toFixed(1)} 秒)`)
-        return { code: 429, message, isRetryable: true }
+    if (status === 404) return logger.warn(`${label}: ${apiMessage || '资源不存在或已被删除'}`)
+    if (status === 401 || status === 403) {
+      return logger.warn(`${label}: ${apiMessage || '未授权（请检查 API Key 是否正确）'}`)
+    }
+    if (status === 422) {
+      const detail = (body as ApiValidationError)?.detail
+        ?.map((item) => `${(item.loc || []).join('.')}: ${item.msg}`)
+        .join('; ')
+      return logger.warn(`${label}: 请求参数未通过校验${detail ? ` - ${detail}` : ''}`)
+    }
+    if (status === 429) return logger.warn(`${label}: 触发官方速率限制，请稍后重试`)
+    if (status && status >= 500) return logger.warn(`${label}: 服务端错误 HTTP ${status}`)
+    logger.error(`${label} 失败: ${getErrorMessage(error)}`)
+  }
 
-      case 500:
-      case 502:
-      case 503:
-      case 504:
-        message = `${context}：服务器暂时不可用`
-        logger.warn(message)
-        return { code: status, message, isRetryable: true }
+  // ─── 数据转换 ──────────────────────────────────────────────
 
-      default:
-        return { code: status, message: `${context}：HTTP ${status}`, isRetryable: false }
+  /** 官方 CDN 的封面路径会重复扩展名（galleries/xxx/cover.webp.webp），此处归一化 */
+  private cleanPath(path: string): string {
+    if (!path) return path
+    return path.replace(/\.(webp|jpg|jpeg|png)\.(webp|jpg|jpeg|png)$/i, '.$1')
+  }
+
+  private transformTag(tag: ApiTag): Tag {
+    return {
+      id: tag.id,
+      type: tag.type,
+      name: tag.name,
+      url: tag.url,
+      count: tag.count,
+      slug: tag.slug,
     }
   }
 
+  private transformListItem(item: ApiGalleryListItem): SearchGallery {
+    return {
+      id: item.id,
+      media_id: item.media_id,
+      english_title: item.english_title || '',
+      japanese_title: item.japanese_title ?? null,
+      thumbnail: this.cleanPath(item.thumbnail),
+      thumbnail_width: item.thumbnail_width,
+      thumbnail_height: item.thumbnail_height,
+      num_pages: item.num_pages ?? 0,
+      num_favorites: item.num_favorites ?? 0,
+      tag_ids: item.tag_ids ?? [],
+      blacklisted: item.blacklisted ?? false,
+    }
+  }
+
+  private transformGalleryResponse(raw: ApiGalleryDetail): Gallery {
+    return {
+      id: String(raw.id),
+      media_id: raw.media_id,
+      title: {
+        english: raw.title?.english ?? '',
+        japanese: raw.title?.japanese ?? '',
+        pretty: raw.title?.pretty ?? '',
+      },
+      images: {
+        pages: (raw.pages || []).map((page) => ({
+          ...page,
+          path: this.cleanPath(page.path),
+          // v2 的 PageInfo.thumbnail 是字符串（旧版才是对象）
+          thumbnail: this.cleanPath(page.thumbnail),
+        })),
+        cover: raw.cover
+          ? { ...raw.cover, path: this.cleanPath(raw.cover.path) }
+          : { path: '', width: 0, height: 0 },
+        thumbnail: raw.thumbnail
+          ? { ...raw.thumbnail, path: this.cleanPath(raw.thumbnail.path) }
+          : { path: '', width: 0, height: 0 },
+      },
+      scanlator: raw.scanlator ?? '',
+      upload_date: raw.upload_date,
+      tags: (raw.tags || []).map((tag) => this.transformTag(tag)),
+      num_pages: raw.num_pages,
+      num_favorites: raw.num_favorites,
+      related: raw.related ? raw.related.map((item) => this.transformListItem(item)) : undefined,
+    }
+  }
+
+  private toSearchResult(
+    items: ApiGalleryListItem[],
+    numPages?: number,
+    perPage?: number,
+    total?: number | null,
+  ): SearchResult {
+    const result = items.map((item) => this.transformListItem(item))
+    return {
+      result,
+      num_pages: numPages ?? (result.length > 0 ? 1 : 0),
+      per_page: perPage ?? result.length,
+      total: total ?? result.length,
+    }
+  }
+
+  private normalizeGalleryId(id: string | number): string | null {
+    const value = String(id ?? '').trim()
+    return /^\d+$/.test(value) ? value : null
+  }
+
+  // ─── 画廊 ──────────────────────────────────────────────────
+
   /**
-   * 获取 CDN 服务器列表（从 /api/v2/cdn 动态获取，缓存 24h）
-   * API 返回格式: { image_servers: [...], thumb_servers: [...] }
-   * 返回值: { image: 主机名列表, thumb: 主机名列表 }
+   * GET /api/v2/galleries/{id}
+   *
+   * @param options.include 官方 include 参数，取值 comments / related / favorite / suggestions。
+   *   需要“详情 + 相关作品”时使用 include: ['related']，可比再请求 /related 少消耗一次配额。
+   */
+  async getGallery(id: string | number, options: { include?: GalleryInclude[] } = {}): Promise<Gallery | null> {
+    const galleryId = this.normalizeGalleryId(id)
+    if (!galleryId) {
+      logger.warn(`无效的画廊 ID: ${id}`)
+      return null
+    }
+
+    const includes = (options.include || []).filter((value): value is GalleryInclude =>
+      (GALLERY_INCLUDES as readonly string[]).includes(value),
+    )
+    if ((options.include || []).length !== includes.length) {
+      logger.warn(`include 参数包含官方不支持的值，已忽略：${options.include?.join(',')}`)
+    }
+
+    const suffix = includes.length ? `:${includes.join(',')}` : ''
+    const raw = await this.request<ApiGalleryDetail>({
+      key: 'gallery',
+      path: `/galleries/${galleryId}`,
+      query: includes.length ? { include: includes.join(',') } : undefined,
+      cacheKey: `nhentai:gallery:${galleryId}${suffix}`,
+      label: `画廊 ${galleryId}`,
+    })
+
+    if (!raw) return null
+    if (typeof raw.id === 'undefined') {
+      logger.warn(`画廊 ${galleryId} 返回了无效的响应结构`)
+      return null
+    }
+    if (this.config.returnApiJson) {
+      logger.info(`[API响应] 画廊 ${galleryId}:\n${JSON.stringify(raw, null, 2)}`)
+    }
+    return this.transformGalleryResponse(raw)
+  }
+
+  /** GET /api/v2/galleries/random —— 官方只返回 { id }，需再取一次详情 */
+  async getRandomGallery(): Promise<Gallery | null> {
+    const raw = await this.request<ApiRandomGallery>({
+      key: 'random',
+      path: '/galleries/random',
+      label: '随机画廊',
+    })
+    if (!raw || typeof raw.id === 'undefined') return null
+    // 随机结果不做缓存，否则会反复返回同一本
+    return this.getGallery(raw.id)
+  }
+
+  /**
+   * GET /api/v2/search
+   *
+   * 支持关键词、精确短语、取反、标签过滤、数值与日期过滤（详见官方文档），
+   * sort 取值为 date / popular / popular-today / popular-week / popular-month。
+   */
+  async searchGalleries(query: string, page = 1, sort?: string): Promise<SearchResult | null> {
+    const keyword = (query || '').trim()
+    if (!keyword) {
+      logger.warn('搜索关键词为空，已跳过请求')
+      return null
+    }
+
+    const safePage = Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1
+    const normalizedSort = normalizeSortOption(sort)
+    if (sort && !normalizedSort) {
+      logger.warn(`排序选项 "${sort}" 不受官方 API 支持，已按默认（date）处理`)
+    }
+
+    const raw = await this.request<ApiPaginated<ApiGalleryListItem>>({
+      key: 'search',
+      path: '/search',
+      query: { query: keyword, page: safePage, sort: normalizedSort },
+      cacheKey: `nhentai:search:${keyword}:${safePage}:${normalizedSort || ''}`,
+      label: `搜索 "${keyword}"`,
+    })
+
+    if (!raw) return null
+    if (!Array.isArray(raw.result)) {
+      logger.warn(`搜索 "${keyword}" 返回了意外的数据结构`)
+      return { result: [], num_pages: 0, per_page: 25 }
+    }
+    logger.debug(`搜索 "${keyword}" 第 ${safePage} 页：${raw.result.length} 条 / 共 ${raw.num_pages} 页`)
+    return this.toSearchResult(raw.result, raw.num_pages, raw.per_page, raw.total)
+  }
+
+  /**
+   * GET /api/v2/galleries/popular
+   *
+   * 官方返回的是**数组**（GalleryListItem[]），没有分页参数，限额 8/分钟。
+   */
+  async getPopularGalleries(): Promise<SearchResult | null> {
+    const raw = await this.request<ApiGalleryListItem[]>({
+      key: 'popular',
+      path: '/galleries/popular',
+      cacheKey: 'nhentai:popular',
+      label: '热门画廊',
+    })
+
+    if (!raw) return null
+    if (!Array.isArray(raw)) {
+      logger.warn('热门画廊返回了意外的数据结构')
+      return { result: [], num_pages: 0, per_page: 0 }
+    }
+    return this.toSearchResult(raw)
+  }
+
+  /** GET /api/v2/galleries/{id}/related —— 返回 { result }，无分页字段 */
+  async getRelatedGalleries(id: string | number): Promise<SearchResult | null> {
+    const galleryId = this.normalizeGalleryId(id)
+    if (!galleryId) {
+      logger.warn(`无效的画廊 ID: ${id}`)
+      return null
+    }
+    const raw = await this.request<ApiRelatedGalleries>({
+      key: 'related',
+      path: `/galleries/${galleryId}/related`,
+      cacheKey: `nhentai:related:${galleryId}`,
+      label: `画廊 ${galleryId} 的相关作品`,
+    })
+
+    if (!raw) return null
+    if (!Array.isArray(raw.result)) {
+      logger.warn(`画廊 ${galleryId} 的相关作品返回了意外的数据结构`)
+      return { result: [], num_pages: 0, per_page: 0 }
+    }
+    return this.toSearchResult(raw.result)
+  }
+
+  /**
+   * POST /api/v2/galleries/{id}/download
+   *
+   * 需要 API Key（官方还须开启 allow_downloads），返回带 expires_at 的短时效直链。
+   * 该直链由官方打包，不经过插件的图片处理流程，仅在需要官方原始压缩包时使用。
+   */
+  async getGalleryDownloadUrl(
+    id: string | number,
+    format: DownloadFormat = 'zip',
+  ): Promise<ApiDownloadResponse | null> {
+    if (!this.config.apiKey) {
+      logger.warn('官方下载接口需要 API Key，请在插件配置中填写')
+      return null
+    }
+    const galleryId = this.normalizeGalleryId(id)
+    if (!galleryId) {
+      logger.warn(`无效的画廊 ID: ${id}`)
+      return null
+    }
+    if (!(DOWNLOAD_FORMATS as readonly string[]).includes(format)) {
+      logger.warn(`不支持的下载格式: ${format}`)
+      return null
+    }
+
+    const data = await this.request<ApiDownloadResponse>({
+      key: 'download',
+      path: `/galleries/${galleryId}/download`,
+      method: 'POST',
+      query: { format },
+      label: `画廊 ${galleryId} 下载直链`,
+      // 官方签发限额很紧（实测 429 后需冷却 300s），配额不足时直接降级到 CDN，
+      // 绝不把用户的下载请求卡住数分钟
+      optional: true,
+    })
+
+    if (!data?.url) return null
+    if (data.expires_at && data.expires_at * 1000 <= Date.now()) {
+      logger.warn(`画廊 ${galleryId} 的下载直链已过期`)
+      return null
+    }
+    return data
+  }
+
+  // ─── CDN ───────────────────────────────────────────────────
+
+  private extractHosts(servers: unknown): string[] {
+    if (!Array.isArray(servers)) return []
+    const hosts: string[] = []
+    for (const entry of servers) {
+      if (typeof entry !== 'string' || !entry) continue
+      let host = entry
+      if (entry.includes('://')) {
+        try {
+          host = new URL(entry).hostname
+        } catch {
+          continue
+        }
+      }
+      if (host && !hosts.includes(host)) hosts.push(host)
+    }
+    return hosts
+  }
+
+  private health(host: string): CdnHostHealth {
+    let entry = this.hostHealth.get(host)
+    if (!entry) {
+      entry = { failures: 0, cooldownUntil: 0, latencyMs: 0, samples: 0 }
+      this.hostHealth.set(host, entry)
+    }
+    return entry
+  }
+
+  /** 冷却中的主机排到最后，其余按实测延迟升序，未采样的保持官方顺序 */
+  private orderHosts(hosts: string[]): string[] {
+    const now = Date.now()
+    return hosts
+      .map((host, index) => ({ host, index, health: this.hostHealth.get(host) }))
+      .sort((a, b) => {
+        const aCooling = (a.health?.cooldownUntil ?? 0) > now ? 1 : 0
+        const bCooling = (b.health?.cooldownUntil ?? 0) > now ? 1 : 0
+        if (aCooling !== bCooling) return aCooling - bCooling
+        const aLatency = a.health?.samples ? a.health.latencyMs : Number.POSITIVE_INFINITY
+        const bLatency = b.health?.samples ? b.health.latencyMs : Number.POSITIVE_INFINITY
+        if (aLatency !== bLatency) return aLatency - bLatency
+        return a.index - b.index
+      })
+      .map((entry) => entry.host)
+  }
+
+  /**
+   * GET /api/v2/config —— GET /api/v2/cdn 的超集（额外返回 announcement），
+   * 因此只用这一个端点，一次请求同时拿到 CDN 列表与公告。
    */
   async getCdnServers(): Promise<{ image: string[]; thumb: string[] }> {
     const now = Date.now()
-
-    // 使用缓存 - 检查两个服务器列表是否都有效
-    if (this.cdnImageServers && this.cdnImageServers.length > 0 && this.cdnThumbServers && this.cdnThumbServers.length > 0 && now - this.lastCdnUpdate < CDN_CONFIG_TTL_MS) {
-      if (this.config.debug) logger.debug(`使用缓存的 CDN 服务器`)
-      return {
-        image: this.cdnImageServers,
-        thumb: this.cdnThumbServers,
-      }
+    if (this.cdn && now - this.lastCdnUpdate < CDN_CONFIG_TTL_MS && now >= this.cdnNextRetry) {
+      return { image: this.orderHosts(this.cdn.image), thumb: this.orderHosts(this.cdn.thumb) }
     }
 
-    try {
-      const url = `${API_BASE}/cdn`
-      const response = await this.gotManager.apiGot!.get(url).json<any>()
+    const raw = await this.request<ApiAppConfig>({
+      key: 'config',
+      path: '/config',
+      label: 'CDN 配置',
+    })
 
-      if (this.config.debug) {
-        logger.debug(`CDN API 响应: ${JSON.stringify(response, null, 2)}`)
-      }
-
-      // 从 API 响应中提取服务器列表
-      let imageServers: string[] = []
-      let thumbServers: string[] = []
-
-      // 官方 API 格式: { image_servers: [...], thumb_servers: [...] }
-      if (response?.image_servers && Array.isArray(response.image_servers) && response.image_servers.length > 0) {
-        if (this.config.debug) {
-          logger.debug(`检测到 image_servers: ${response.image_servers.length} 个`)
-        }
-        imageServers = response.image_servers
-          .map((url: any) => {
-            const host = this.extractHostFromUrl(url)
-            if (this.config.debug) {
-              logger.debug(`提取图片服务器: ${url} -> ${host}`)
-            }
-            return host
-          })
-          .filter((host: string | null): host is string => host !== null && host.length > 0)
-      }
-
-      if (response?.thumb_servers && Array.isArray(response.thumb_servers) && response.thumb_servers.length > 0) {
-        if (this.config.debug) {
-          logger.debug(`检测到 thumb_servers: ${response.thumb_servers.length} 个`)
-        }
-        thumbServers = response.thumb_servers
-          .map((url: any) => {
-            const host = this.extractHostFromUrl(url)
-            if (this.config.debug) {
-              logger.debug(`提取缩略图服务器: ${url} -> ${host}`)
-            }
-            return host
-          })
-          .filter((host: string | null): host is string => host !== null && host.length > 0)
-      }
-
-      // 备用格式处理
-      if (imageServers.length === 0 && response?.servers && Array.isArray(response.servers)) {
-        if (this.config.debug) {
-          logger.debug(`检测到 servers (旧格式): ${response.servers.length} 个`)
-        }
-        imageServers = response.servers
-          .map((s: any) => s?.c || s)
-          .filter((host: any): host is string => typeof host === 'string' && host.length > 0)
-      }
-
-      if (imageServers.length === 0) {
-        logger.warn(`CDN API 返回空列表或无效格式: ${JSON.stringify(response)}`)
-        throw new Error('CDN 服务器列表为空或格式无效')
-      }
-
-      // 如果只有图片服务器没有缩略图服务器，使用图片服务器
-      if (thumbServers.length === 0) {
-        thumbServers = imageServers
-      }
-
-      // 分别保存两个服务器列表到缓存
-      this.cdnImageServers = imageServers
-      this.cdnThumbServers = thumbServers
-      this.lastCdnUpdate = now
-      logger.info(
-        `CDN 已更新 - 图片: ${imageServers.join(', ')} | 缩略图: ${thumbServers.join(', ')}`
-      )
-      return { image: imageServers, thumb: thumbServers }
-    } catch (error) {
-      // 降级到默认 CDN
-      const defaultImageServers = [DEFAULT_IMAGE_CDN]
-      const defaultThumbServers = [DEFAULT_THUMB_CDN]
-
-      const errorMsg = getErrorMessage(error)
-      logger.warn(
-        `获取 CDN 失败: ${errorMsg}，使用默认值 [${defaultImageServers.join(', ')} | ${defaultThumbServers.join(', ')}]`
-      )
-
-      if (!this.cdnImageServers || this.cdnImageServers.length === 0) {
-        this.cdnImageServers = defaultImageServers
-        this.cdnThumbServers = defaultThumbServers
+    if (raw) {
+      const image = this.extractHosts(raw.image_servers)
+      const thumb = this.extractHosts(raw.thumb_servers)
+      if (image.length > 0) {
+        this.cdn = { image, thumb: thumb.length > 0 ? thumb : image }
         this.lastCdnUpdate = now
-      }
+        this.cdnNextRetry = 0
 
-      return {
-        image: this.cdnImageServers || defaultImageServers,
-        thumb: this.cdnThumbServers || defaultThumbServers,
+        const message = raw.announcement?.message?.trim()
+        if (message && message !== this.announcement) {
+          this.announcement = message
+          logger.info(`nhentai 公告: ${message}`)
+        }
+        logger.debug(`CDN 已更新 - 图片: ${image.join(', ')} | 缩略图: ${this.cdn.thumb.join(', ')}`)
+        return { image: this.orderHosts(image), thumb: this.orderHosts(this.cdn.thumb) }
       }
+      logger.warn(`CDN 配置为空或格式无效: ${JSON.stringify(raw).slice(0, 200)}`)
     }
+
+    // 降级：保留上一次成功的列表，否则使用内置兜底主机；1 分钟后允许再次尝试
+    this.cdnNextRetry = now + 60_000
+    if (!this.cdn) {
+      this.cdn = { image: [DEFAULT_IMAGE_CDN], thumb: [DEFAULT_THUMB_CDN] }
+      this.lastCdnUpdate = now
+      logger.warn(`CDN 配置获取失败，使用内置后备主机 [${DEFAULT_IMAGE_CDN} | ${DEFAULT_THUMB_CDN}]`)
+    }
+    return { image: this.orderHosts(this.cdn.image), thumb: this.orderHosts(this.cdn.thumb) }
   }
 
-  /**
-   * 从完整 URL 中提取主机名
-   * 例如: https://i1.nhentai.net -> i1.nhentai.net
-   */
-  private extractHostFromUrl(url: string): string | null {
-    try {
-      if (!url || typeof url !== 'string') return null
-
-      // 如果已经是主机名格式（不含 ://），直接返回
-      if (!url.includes('://')) {
-        return url.length > 0 ? url : null
-      }
-
-      // 从完整 URL 中提取主机名
-      const urlObj = new URL(url)
-      return urlObj.hostname
-    } catch (e) {
-      // URL 解析失败，尝试直接使用
-      return url?.length > 0 ? url : null
+  /** 上报一次 CDN 请求结果，用于主机的冷却与延迟排序 */
+  reportCdnResult(host: string, ok: boolean, latencyMs = 0): void {
+    if (!host) return
+    const entry = this.health(host)
+    if (ok) {
+      entry.failures = 0
+      entry.cooldownUntil = 0
+      entry.samples++
+      entry.latencyMs = entry.samples === 1 ? latencyMs : entry.latencyMs * 0.7 + latencyMs * 0.3
+      return
     }
+    entry.failures++
+    entry.cooldownUntil = Date.now() + Math.min(30_000 * entry.failures, 300_000)
+    logger.debug(
+      `CDN ${host} 连续失败 ${entry.failures} 次，冷却 ${Math.round((entry.cooldownUntil - Date.now()) / 1000)}s`,
+    )
   }
 
-  /**
-   * 将 API 响应格式转换为内部数据格式
-   */
-  private transformGalleryResponse(rawData: any): Gallery {
-    // 清理路径中的重复扩展名（API 可能返回如 cover.webp.webp）
-    const cleanPath = (path: string): string => {
-      if (!path) return path
-      // 匹配常见的重复扩展名模式：.webp.webp, .jpg.jpg, .png.png, .png.webp 等
-      return path.replace(/\.(webp|jpg|jpeg|png)\.(webp|jpg|jpeg|png)$/i, '.$1')
-    }
-
+  getMetrics(): ApiMetrics & { rateLimiterWaits: number; rateLimiterWaitMs: number; trackedCdnHosts: number } {
     return {
-      id: String(rawData.id),
-      media_id: rawData.media_id,
-      title: rawData.title,
-      images: {
-        pages: (rawData.pages || []).map((p: any) => ({
-          ...p,
-          path: cleanPath(p.path),
-          thumbnail: cleanPath(p.thumbnail),
-        })),
-        cover: rawData.cover ? { ...rawData.cover, path: cleanPath(rawData.cover.path) } : rawData.cover,
-        thumbnail: rawData.thumbnail ? { ...rawData.thumbnail, path: cleanPath(rawData.thumbnail.path) } : rawData.thumbnail,
-      },
-      scanlator: rawData.scanlator,
-      upload_date: rawData.upload_date,
-      tags: rawData.tags,
-      num_pages: rawData.num_pages,
-      num_favorites: rawData.num_favorites,
-    }
-  }
-
-  async getGallery(id: string): Promise<Gallery | null> {
-    const cacheKey = `nhentai:gallery:${id}`
-    // 检查缓存
-    const cached = await this.getCached<Gallery>(cacheKey)
-    if (cached) return cached
-
-    try {
-      logger.info(`请求画廊: ${id}`)
-
-      const url = `${API_BASE}/galleries/${id}`
-      const rawData = await this.gotManager.apiGot!.get(url).json<any>()
-
-      if (!rawData || typeof rawData.id === 'undefined') throw new Error('无效的API响应')
-
-      const data = this.transformGalleryResponse(rawData)
-
-      logger.info(`获取画廊 ${id} 成功`)
-
-      if (this.config.returnApiJson) {
-        logger.info(`[API响应] 画廊 ${id}:
-${JSON.stringify(rawData, null, 2)}`)
-      }
-      // 保存到缓存
-      await this.setCached(cacheKey, data)
-
-      return data
-    } catch (error) {
-      logError('请求画廊', id, error)
-      return null
-    }
-  }
-
-  /**
-   * 获取随机画廊
-   * 官方文档：使用 GET /api/v2/galleries/random
-   * 注意：API 返回只包含 id，需要再次调用 getGallery 获取完整信息
-   * 注意：不缓存随机结果，每次都返回新的画廊
-   */
-  async getRandomGallery(): Promise<Gallery | null> {
-    try {
-      logger.info('请求随机画廊')
-
-      const url = `${API_BASE}/galleries/random`
-      const randomResponse = await this.gotManager.apiGot!.get(url).json<any>()
-
-      if (!randomResponse || typeof randomResponse.id === 'undefined') {
-        throw new Error('无效的API响应')
-      }
-
-      if (this.config.returnApiJson) {
-        logger.info(`[API响应] 随机画廊 ${randomResponse.id}:
-${JSON.stringify(randomResponse, null, 2)}`)
-      }
-
-      // API 仅返回 id，需要获取完整的画廊信息
-      const galleryId = String(randomResponse.id)
-      const data = await this.getGallery(galleryId)
-
-      if (!data) {
-        throw new Error(`无法获取随机画廊完整信息: ${galleryId}`)
-      }
-
-      logger.info(`随机画廊获取成功: ${data.id}`)
-
-      // 注意：不缓存随机结果，避免重复返回同一画廊
-      return data
-    } catch (error) {
-      logError('请求随机画廊', 'GET /api/v2/galleries/random', error)
-      return null
-    }
-  }
-
-  async searchGalleries(query: string, page = 1, sort?: string): Promise<SearchResult | null> {
-    const cacheKey = `nhentai:search:${query}:${page}:${sort || ''}`
-    const cached = await this.getCached<SearchResult>(cacheKey)
-    if (cached) return cached
-
-    try {
-      // 官方 API 仅支持 'popular'
-      if (sort && sort !== 'popular') {
-        logger.warn(`排序选项 "${sort}" 不受支持，已移除`)
-        sort = undefined
-      }
-
-      logger.info(`搜索: "${query}" (页 ${page}${sort ? `, 排序: ${sort}` : ''})`)
-
-      const searchParams = new URLSearchParams({ query, page: page.toString() })
-      if (sort) searchParams.set('sort', sort)
-
-      const url = `${API_BASE}/search?${searchParams.toString()}`
-      const data = await this.gotManager.apiGot!.get(url).json<SearchResult>()
-
-      if (!data || !data.result) {
-        logger.warn(`搜索 "${query}" 无结果`)
-        return { result: [], num_pages: 0, per_page: 25 }
-      }
-
-      logger.info(`找到 ${data.result.length} 个结果（共 ${data.num_pages} 页）`)
-      await this.setCached(cacheKey, data)
-      return data
-    } catch (error) {
-      logError('搜索', `"${query}"`, error)
-      return null
-    }
-  }
-
-  /**
-   * 获取相关画廊
-   * 官方文档：GET /api/v2/galleries/{id}/related
-   * 用于推荐相似的作品
-   */
-  async getRelatedGalleries(id: string): Promise<SearchResult | null> {
-    const cacheKey = `nhentai:related:${id}`
-    // 检查缓存
-    const cached = await this.getCached<SearchResult>(cacheKey)
-    if (cached) return cached
-
-    try {
-      logger.info(`请求相关画廊: ${id}`)
-
-      const url = `${API_BASE}/galleries/${id}/related`
-      const data = await this.gotManager.apiGot!.get(url).json<SearchResult>()
-
-      if (!data || !data.result) {
-        logger.warn(`画廊 ${id} 的相关作品返回了意外的数据结构`)
-        if (this.config.debug) {
-          logger.info(`[API响应] 原始数据:
-${JSON.stringify(data, null, 2)}`)
-        }
-        return { result: [], num_pages: 0, per_page: 25 }
-      }
-
-      logger.info(`获取相关画廊成功，找到 ${data.result.length} 个相关作品`)
-
-      if (this.config.returnApiJson) {
-        logger.info(`[API响应] 画廊 ${id} 的相关作品:
-${JSON.stringify(data, null, 2)}`)
-      }
-      // 保存到缓存
-      await this.setCached(cacheKey, data)
-
-      return data
-    } catch (error) {
-      logError('请求相关画廊', id, error)
-      return null
-    }
-  }
-
-  /**
-   * 获取热门画廊
-   * 官方文档：GET /api/v2/galleries/popular
-   * 获取热门作品列表
-   */
-  async getPopularGalleries(page = 1): Promise<SearchResult | null> {
-    const cacheKey = `nhentai:popular:${page}`
-    // 检查缓存
-    const cached = await this.getCached<SearchResult>(cacheKey)
-    if (cached) return cached
-
-    try {
-      logger.info(`请求热门画廊: 第 ${page} 页`)
-
-      const searchParams = new URLSearchParams({ page: page.toString() })
-      const url = `${API_BASE}/galleries/popular?${searchParams.toString()}`
-      const data = await this.gotManager.apiGot!.get(url).json<SearchResult>()
-
-      if (!data || !data.result) {
-        logger.warn(`热门画廊返回了意外的数据结构`)
-        if (this.config.debug) {
-          logger.info(`[API响应] 原始数据:
-${JSON.stringify(data, null, 2)}`)
-        }
-        return { result: [], num_pages: 0, per_page: 25 }
-      }
-
-      logger.info(`获取热门画廊成功，找到 ${data.result.length} 个结果`)
-
-      if (this.config.returnApiJson) {
-        logger.info(`[API响应] 热门画廊第 ${page} 页:
-${JSON.stringify(data, null, 2)}`)
-      }
-      // 保存到缓存
-      await this.setCached(cacheKey, data)
-
-      return data
-    } catch (error) {
-      logError('请求热门画廊', `第 ${page} 页`, error)
-      return null
-    }
-  }
-
-  // 获取画廊完整下载链接
-  async getGalleryDownloadUrl(id: string): Promise<{ url: string } | null> {
-    try {
-      logger.info(`请求画廊下载链接: ${id}`)
-
-      const url = `${API_BASE}/galleries/${id}/download`
-      const data = await this.gotManager.apiGot!.post(url).json<{ url: string }>()
-
-      if (!data?.url || typeof data.url !== 'string') {
-        logger.warn(`获取画廊 ${id} 下载链接失败：响应格式无效`)
-        return null
-      }
-
-      logger.info(`获取画廊 ${id} 下载链接成功`)
-
-      if (this.config.debug) {
-        logger.debug(`下载链接有效期可能受限，请立即使用`)
-      }
-
-      return data
-    } catch (error) {
-      const errorMsg = getErrorMessage(error)
-      logger.warn(`获取画廊 ${id} 下载链接失败: ${errorMsg}`)
-      return null
+      ...this.metrics,
+      rateLimiterWaits: this.limiter.totalWaits,
+      rateLimiterWaitMs: this.limiter.totalWaitMs,
+      trackedCdnHosts: this.hostHealth.size,
     }
   }
 
   dispose(): void {
-    // 销毁缓存实例
-    if (this.cache) {
-      this.cache.dispose()
-      this.cache = null
+    this.apiGate.drain()
+    this.limiter.reset()
+    this.hostHealth.clear()
+    this.cache?.dispose()
+    this.cache = null
+    this.cdn = null
+    this.lastCdnUpdate = 0
+    this.http.dispose()
+    if (this.config.debug) {
+      logger.info(
+        `ApiService 已释放（请求 ${this.metrics.requests} 次，缓存命中 ${this.metrics.cacheHits} 次，` +
+          `失败 ${this.metrics.errors} 次，限流等待 ${this.limiter.totalWaits} 次）`,
+      )
     }
-    this.gotManager.dispose()
-    if (this.config.debug) logger.info('ApiService 已释放')
   }
 }

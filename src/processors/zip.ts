@@ -1,7 +1,7 @@
 // ZIP 生成模块，负责创建和加密 ZIP 压缩文件
 import { PassThrough } from 'stream'
-import { DownloadedImage } from './types'
-import { GC_TRIGGER_INTERVAL } from '../constants'
+import type { DownloadedImage } from './types'
+import { GC_TRIGGER_INTERVAL, ZIP_COMPRESSION_LEVEL } from '../constants'
 import { logger } from '../utils'
 
 // 延迟加载 archiver 及其加密格式（避免在模块初始化时加载）
@@ -30,7 +30,6 @@ async function ensureArchiverInitialized() {
 export async function createZip(
   imageStream: AsyncIterable<DownloadedImage>,
   password: string | undefined,
-  imageCompressionEnabled: boolean,
   folderName?: string,
 ): Promise<Buffer> {
   // 类型守卫：验证密码类型
@@ -44,12 +43,10 @@ export async function createZip(
   // 简化条件表达式：直接判断 password 是否为 truthy
   const format = password ? 'zip-encrypted' : 'zip'
 
-  // 智能压缩策略：图片已压缩则用存储模式，否则用标准压缩
-  const compressionLevel = imageCompressionEnabled ? 0 : 6
-
-  // 配置压缩选项和加密参数
+  // 图片本身已是 webp / jpeg，实测 deflate 只能省 0.1% 的体积却要多花约 340ms，
+  // 因此固定用存储模式
   const archiveOptions: any = {
-    zlib: { level: compressionLevel },
+    zlib: { level: ZIP_COMPRESSION_LEVEL },
   }
   if (password) {
     archiveOptions.encryptionMethod = 'aes256'

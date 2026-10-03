@@ -1,10 +1,13 @@
-﻿// 图片处理器，封装了所有图片处理操作
+// 图片处理器，封装了所有图片处理操作
+import * as path from 'path'
+import { promises as fs } from 'fs'
 import { Context } from 'koishi'
-import { GotScraping } from 'got-scraping'
-import { Config } from './config'
+import type { Config } from './config'
+import { logger } from './utils'
 import { ImageCache, PdfCache } from './services/cache'
+import type { HttpManager } from './services/http'
 
-import { CanvasImageProcessor, DownloadedImage, ProcessedImage } from './processors/types'
+import type { CanvasImageProcessor, DownloadedImage, ProcessedImage } from './processors/types'
 import { initCanvasProcessor, ensureCanvasLoaded } from './processors/canvas-processor'
 import {
   applyAntiGzip as applyAntiGzipHelper,
@@ -32,16 +35,23 @@ export class Processor {
     }
   }
 
-  private initializeImageCache(): ImageCache {
-    return new ImageCache(this.config, this.ctx.app.baseDir)
-  }
-
-  private initializePdfCache(): PdfCache {
-    return new PdfCache(this.config, this.ctx.app.baseDir)
+  /** 获取下载/缓存根目录（不存在时创建） */
+  async ensureDownloadDir(): Promise<string> {
+    const downloadDir = path.resolve(this.ctx.app.baseDir, this.config.downloadPath)
+    await fs.mkdir(downloadDir, { recursive: true })
+    return downloadDir
   }
 
   // 初始化缓存
   async initializeCache(): Promise<void> {
+    // 无论缓存是否启用，都要保证下载目录存在：
+    // PDF / ZIP 的临时文件都写在这里，而缓存目录只是它的子目录
+    try {
+      await this.ensureDownloadDir()
+    } catch (error) {
+      logger.warn(`创建下载目录失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
     await Promise.all([
       this.imageCache?.initialize(),
       this.pdfCache?.initialize(),
@@ -56,34 +66,45 @@ export class Processor {
     return this.imageCache
   }
 
-  async applyAntiGzip(buffer: Buffer, identifier?: string, preserveFormat?: boolean): Promise<{ buffer: Buffer; format: string }> {
-    return applyAntiGzipHelper(this.processor, buffer, this.config, identifier, preserveFormat)
+  /** Koishi 根目录，供需要落地临时文件的模块（如官方压缩包）使用 */
+  getBaseDir(): string {
+    return this.ctx.app.baseDir
   }
 
-  async downloadImage(
-    got: GotScraping,
-    url: string,
-    index: number,
-    gid: string,
-    mediaId?: string,
-    retries = this.config.downloadRetries,
-    sessionToken?: object,
-  ): Promise<DownloadedImage | { index: number; error: Error }> {
-    return downloadImageHelper(
-      got,
-      url,
-      index,
-      gid,
-      this.config,
-      this.imageCache,
-      mediaId,
-      retries,
-      sessionToken,
-    )
+  /**
+   * 反和谐处理：加水印后按 targetFormat 重新编码。
+   * 缩略图用 webp/较低质量即可（它们只是菜单里的预览图），
+   * 逐张发送则用 jpeg，保证各平台都能直接识别。
+   */
+  async applyAntiGzip(
+    buffer: Buffer,
+    identifier?: string,
+    targetFormat: 'jpeg' | 'webp' | 'png' = 'jpeg',
+    quality = 90,
+  ): Promise<{ buffer: Buffer; format: string }> {
+    return applyAntiGzipHelper(this.processor, buffer, this.config, identifier, targetFormat, quality)
+  }
+
+  /** 下载单张图片（CDN 切换、重试与缓存由 images 模块统一处理） */
+  async downloadImage(options: {
+    http: HttpManager
+    url: string
+    index: number
+    galleryId: string | number
+    mediaId?: string
+    retries?: number
+    fallbackHosts?: string[]
+    onHostResult?: (host: string, ok: boolean, latencyMs: number) => void
+  }): Promise<DownloadedImage | { index: number; error: Error }> {
+    return downloadImageHelper({
+      ...options,
+      config: this.config,
+      imageCache: this.imageCache,
+    })
   }
 
   async createZip(imageStream: AsyncIterable<DownloadedImage>, password?: string, folderName?: string): Promise<Buffer> {
-    return createZipHelper(imageStream, password, this.config.imageCompression.enabled, folderName)
+    return createZipHelper(imageStream, password, folderName)
   }
 
   async createPdf(

@@ -1,12 +1,12 @@
 // PDF 生成模块，负责创建和加密 PDF 文件。
 import * as fs from 'fs'
 import * as path from 'path'
-import { rm } from 'fs/promises'
-import { DownloadedImage } from './types'
-import { Config } from '../config'
+import { rm, mkdir } from 'fs/promises'
+import type { DownloadedImage } from './types'
+import type { Config } from '../config'
 import { logger } from '../utils'
-import { convertImageForMode, conditionallyCompressJpeg } from './images'
-import { GC_TRIGGER_INTERVAL } from '../constants'
+import { convertImageForMode, pdfProcessVariant } from './images'
+import { GC_TRIGGER_INTERVAL, IMAGE_PROCESS_CONCURRENCY } from '../constants'
 
 // 延迟加载 pdfkit（避免在模块初始化时加载 canvas 依赖）
 let PDFDocument: any = null
@@ -47,15 +47,20 @@ async function processImageBuffer(
 
   // 查询处理缓存
   if (imageCache) {
-    const cached = await imageCache.getProcessed(image.galleryId, image.mediaId, image.index)
+    const cached = await imageCache.getProcessed(
+      image.galleryId,
+      image.mediaId,
+      image.index,
+      pdfProcessVariant(config),
+    )
     if (cached) {
       debugLog && logger.debug(`缓存命中(已处理): 图片 ${image.index + 1}`)
       return { buffer: cached.buffer, format: cached.format }
     }
   }
 
-  // 执行图片处理
-  const { buffer: convertedBuf, finalFormat } = await convertImageForMode(
+  // 单次解码完成格式转换与压缩
+  const { buffer: finalBuffer, finalFormat } = await convertImageForMode(
     processor.processor,
     image.buffer,
     image.extension,
@@ -63,24 +68,20 @@ async function processImageBuffer(
     config,
   )
 
-  const finalBuffer = await conditionallyCompressJpeg(
-    processor.processor,
-    convertedBuf,
-    finalFormat,
-    config.imageCompression.threshold,
-    config.imageCompression.quality,
-    config.imageCompression.enabled,
-    debugLog,
-  )
-
   // 存储处理结果到缓存
   if (imageCache && image.galleryId && image.mediaId !== undefined) {
-    await imageCache.setProcessed(image.galleryId, image.mediaId, image.index, finalBuffer, finalFormat)
+    await imageCache.setProcessed(
+      image.galleryId,
+      image.mediaId,
+      image.index,
+      finalBuffer,
+      finalFormat,
+      pdfProcessVariant(config),
+    )
   }
 
   return { buffer: finalBuffer, format: finalFormat }
 }
-
 
 export async function createPdf(
   imageStream: AsyncIterable<DownloadedImage>,
@@ -99,6 +100,9 @@ export async function createPdf(
   const debugLog = config.debug // 缓存 debug 标志，避免多次访问
   const abortController = new AbortController()
 
+  // 兜底：downloadPath 可能尚未创建（例如禁用了所有缓存）
+  await mkdir(downloadDir, { recursive: true })
+
   try {
     const docOptions: any = { bufferPages: false } // 流式写入以优化内存
     if (password) {
@@ -116,44 +120,65 @@ export async function createPdf(
 
     const processingPromise = (async () => {
       try {
-        for await (const image of imageStream) {
-          if (abortController.signal.aborted) break
+        const iterator = imageStream[Symbol.asyncIterator]()
+        // 预处理队列：编解码在原生线程池上跑，同时推进几张即可吃满多核，
+        // 但页面必须按顺序写入 PDF，所以这里只提前处理、不提前落页。
+        const inflight: Array<{
+          image: ProcessingImage
+          task: Promise<{ buffer: Buffer; format: string } | { error: Error }>
+        }> = []
 
-          try {
-            pageCount++
-            if (pageCount % 10 === 0) onProgress(`PDF生成进度: ${pageCount} 页`)
+        const startNext = async (): Promise<boolean> => {
+          const { value, done } = await iterator.next()
+          if (done) return false
+          const image = value as ProcessingImage
+          const task = processImageBuffer(image, processor, imageCache, config, debugLog).catch((error) => ({
+            error: error instanceof Error ? error : new Error(String(error)),
+          }))
+          inflight.push({ image, task })
+          return true
+        }
 
-            const { buffer: finalBuffer, format: finalFormat } = await processImageBuffer(
-              image as ProcessingImage,
-              processor,
-              imageCache,
-              config,
-              debugLog,
-            )
+        let addedCount = 0
 
-            // 添加图片到 PDF，多页时新增页面
-            if (pageCount > 1) {
-              doc.addPage({ size: 'A4' })
-            }
-            doc.image(finalBuffer, 0, 0, {
-              fit: [595, 842], // A4 尺寸 (595x842pt)
-              align: 'center',
-              valign: 'center',
-            })
-          } catch (imgError) {
-            const err = imgError instanceof Error ? imgError : new Error(String(imgError))
-            logger.warn(`[Processor] 跳过处理失败的图片 ${image.index + 1}: ${err.message}`)
-            if (config.debug) onProgress(`处理第 ${pageCount} 张图片失败，已跳过。`)
+        while (true) {
+          while (inflight.length < IMAGE_PROCESS_CONCURRENCY && (await startNext())) {
+            // 填满预处理队列
           }
 
+          const head = inflight.shift()
+          if (!head) break
+          if (abortController.signal.aborted) break
+
+          const result = await head.task
+          if ('error' in result) {
+            logger.warn(`[Processor] 跳过处理失败的图片 ${head.image.index + 1}: ${result.error.message}`)
+            if (config.debug) onProgress(`处理第 ${head.image.index + 1} 张图片失败，已跳过。`)
+            continue
+          }
+
+          addedCount++
+          if (addedCount % 10 === 0) onProgress(`PDF生成进度: ${addedCount} 页`)
+
+          // 添加图片到 PDF，多页时新增页面
+          if (addedCount > 1) {
+            doc.addPage({ size: 'A4' })
+          }
+          doc.image(result.buffer, 0, 0, {
+            fit: [595, 842], // A4 尺寸 (595x842pt)
+            align: 'center',
+            valign: 'center',
+          })
+
           // 手动 GC 释放内存（每 N 页触发一次）
-          if (pageCount % GC_TRIGGER_INTERVAL === 0 && global.gc) {
+          if (addedCount % GC_TRIGGER_INTERVAL === 0 && global.gc) {
             global.gc()
           }
         }
 
-        if (pageCount === 0) throw new Error('没有成功处理任何图片，无法生成 PDF')
-        onProgress(`正在保存 PDF (${pageCount} 张图片)...`)
+        if (addedCount === 0) throw new Error('没有成功处理任何图片，无法生成 PDF')
+        pageCount = addedCount
+        onProgress(`正在保存 PDF (${addedCount} 张图片)...`)
       } catch (error) {
         abortController.abort()
         throw error

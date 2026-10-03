@@ -1,5 +1,8 @@
+/**
+ * 消息中间件：识别消息里的 nhentai 链接并转成下载指令。
+ */
 import { Middleware, Session } from 'koishi'
-import { Config } from './config'
+import type { Config } from './config'
 import { logger } from './utils'
 import { galleryUrlRegex } from './constants'
 

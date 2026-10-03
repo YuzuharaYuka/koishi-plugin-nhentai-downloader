@@ -1,12 +1,16 @@
+/**
+ * 指令注册：nh.search / nh.download / nh.popular / nh.random。
+ */
 import { Command, Session, Context, h } from 'koishi'
-import { Config } from './config'
+import type { Config } from './config'
 import { logger, getErrorMessage } from './utils'
 import { ApiService } from './services/api'
+import { normalizeSortOption } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
 import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, handleIdSearchWithMenu, handleRandomWithInteraction, SearchOptions } from './handlers'
 import { handleDownloadCommand, DownloadOptions } from './handlers'
-import { galleryIdRegex, galleryUrlRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
+import { galleryIdRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
 
 export function registerSearchCommands(
   ctx: Context,
@@ -16,22 +20,13 @@ export function registerSearchCommands(
   getMenuService: () => MenuService | null,
   ensureInitialized: (session: Session) => boolean,
 ): Command {
-  const nhCmd = ctx.command('nh', 'Nhentai 漫画下载与搜索工具').alias('nhentai')
+  const nhCmd = ctx.command('nh', 'nhentai 漫画搜索与下载').alias('nhentai')
 
   nhCmd
-    .subcommand('.search [...query:string]', '搜索漫画或根据ID获取漫画信息')
+    .subcommand('.search [...query:string]', '按关键词或作品 ID 搜索')
     .alias('nh搜索', 'nhsearch', 'nh search')
-    .option('sort', '-s <value:string> 按热门排序（仅支持 popular）')
-    .option('lang', '-l <value:string> 指定语言 (可选: chinese, japanese, english, all)')
-    .usage(
-      '根据关键词或漫画 ID 搜索。\n' +
-        'ID 搜索会直接显示作品信息并提示下载。\n' +
-        '关键词搜索会返回分页结果，支持交互式翻页和下载。',
-    )
-    .example('nh.search touhou  # 搜索 "touhou"')
-    .example('nh.search 177013  # 获取 ID 为 177013 的作品')
-    .example('nh.search touhou -s popular  # 按热门度搜索 "touhou"')
-    .example('nh.search touhou -l chinese  # 搜索中文 "touhou"')
+    .option('sort', '-s <value:string> 排序：date / popular / popular-today / popular-week / popular-month，可简写 today / week / month')
+    .option('lang', '-l <value:string> 语言筛选：chinese / japanese / english / all')
     .action(async ({ session, options }, ...queryParts) => {
       if (!session) return
       options = options || {}
@@ -46,15 +41,19 @@ export function registerSearchCommands(
       const nhentaiService = getNhentaiService()
       const menuService = getMenuService()
 
-      if (options.sort && !VALID_SORT_OPTIONS.includes(options.sort as any)) {
-        return session.send(`无效的排序选项: ${options.sort}`)
+      // 排序取值来自官方 /search 的 sort 枚举，同时接受 today / week / month 简写
+      const sort = normalizeSortOption(options.sort)
+      if (options.sort && !sort) {
+        return session.send(
+          `无效的排序选项: ${options.sort}\n可用值: ${VALID_SORT_OPTIONS.join(', ')}（可简写 today / week / month）`,
+        )
       }
       if (options.lang && !VALID_LANG_OPTIONS.includes(options.lang as any)) {
         return session.send(`无效的语言选项: ${options.lang}`)
       }
 
       const searchOptions: SearchOptions = {
-        sort: options.sort as SearchOptions['sort'],
+        sort,
         lang: options.lang as SearchOptions['lang'],
       }
 
@@ -105,20 +104,12 @@ export function registerDownloadCommands(
   nhCmd: Command,
 ): void {
   nhCmd
-    .subcommand('.download <idOrUrl>', '下载指定ID或链接的漫画')
+    .subcommand('.download <idOrUrl>', '下载作品')
     .alias('nh下载', 'nhdownload', 'nh download')
-    .option('pdf', '-p 以 PDF 文件形式发送')
-    .option('zip', '-z 以 ZIP 压缩包形式发送')
-    .option('image', '-i 以逐张图片形式发送')
-    .option('key', '-k <password:string> 为生成的压缩包或PDF设置密码')
-    .usage(
-      '根据漫画 ID 或 nhentai 官网链接下载作品。\n' +
-        '可以通过选项指定输出格式 (PDF/ZIP/图片) 和密码。\n' +
-        '若未指定格式，将使用配置中的默认输出格式。',
-    )
-    .example('nh.download 123456 -z  # 将 ID 为 123456 的漫画打包为 ZIP 文件')
-    .example('nh download https://nhentai.net/g/123456/ -p -k mypassword  # 下载链接对应的漫画为 PDF，并设置密码')
-    .example('nh下载 123456 -i  # 逐张发送 ID 为 123456 的漫画图片')
+    .option('pdf', '-p 以 PDF 文件发送')
+    .option('zip', '-z 以 ZIP 压缩包发送')
+    .option('image', '-i 逐张发送图片')
+    .option('key', '-k <password:string> 为 PDF / ZIP 设置密码')
     .action(async ({ session, options }, idOrUrl) => {
       if (!session) return
       options = options || {}
@@ -133,7 +124,7 @@ export function registerDownloadCommands(
       await session.send(h('quote', { id: session.messageId }) + `正在解析画廊 ${id}...`)
 
       try {
-        await handleDownloadCommand(session, id, options as DownloadOptions, '', nhentaiService, config, ctx.baseDir)
+        await handleDownloadCommand(session, id, options as DownloadOptions, nhentaiService, config, ctx.baseDir)
       } catch (error: any) {
         logger.error(`[下载] 任务 ID ${id} 失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${getErrorMessage(error)}`)
@@ -142,7 +133,6 @@ export function registerDownloadCommands(
 }
 
 export function registerRandomCommands(
-  ctx: Context,
   config: Config,
   getNhentaiService: () => NhentaiService,
   getMenuService: () => MenuService | null,
@@ -150,10 +140,8 @@ export function registerRandomCommands(
   nhCmd: Command,
 ): void {
   nhCmd
-    .subcommand('.random', '随机推荐一本漫画')
+    .subcommand('.random', '随机推荐，Y 下载、F 换一个、N 退出')
     .alias('nh随机', 'nhrandom', 'nh random')
-    .usage('随机获取一本 nhentai 漫画的详细信息。交互选项：[Y]下载 [F]换一个 [N]退出')
-    .example('nh.random')
     .action(async ({ session }) => {
       if (!session) return
       if (!ensureInitialized(session)) return
@@ -171,13 +159,11 @@ export function registerRandomCommands(
     })
 
   nhCmd
-    .subcommand('.popular', '查看当前的热门漫画')
+    .subcommand('.popular', '今日热门，等价于 nh.search -s popular-today')
     .alias('nh热门', 'nhpopular', 'nh popular')
-    .usage('获取 nhentai 当前的热门漫画列表。此指令为 `nh.search -s popular` 的快捷方式。')
-    .example('nh.popular')
     .action(async ({ session }) => {
       if (!session) return
-      return session.execute('nh.search -s popular')
+      return session.execute('nh.search -s popular-today')
     })
 }
 
@@ -191,5 +177,5 @@ export function registerAllCommands(
 ): void {
   const nhCmd = registerSearchCommands(ctx, config, getApiService, getNhentaiService, getMenuService, ensureInitialized)
   registerDownloadCommands(ctx, config, getNhentaiService, ensureInitialized, nhCmd)
-  registerRandomCommands(ctx, config, getNhentaiService, getMenuService, ensureInitialized, nhCmd)
+  registerRandomCommands(config, getNhentaiService, getMenuService, ensureInitialized, nhCmd)
 }

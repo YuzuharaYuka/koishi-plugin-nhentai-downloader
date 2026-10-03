@@ -1,8 +1,8 @@
 /**
- * 基于 @napi-rs/canvas 的高性能图片处理模块
- * 提供图片格式转换、质量压缩和反和谐处理
+ * 基于 @napi-rs/canvas 的图片处理模块
+ * 提供格式转换与反和谐水印两项能力
  */
-import { createCanvas, loadImage, Image, SKRSContext2D, GlobalFonts } from '@napi-rs/canvas'
+import { createCanvas, Image, Canvas, SKRSContext2D, GlobalFonts } from '@napi-rs/canvas'
 import { logger } from '../utils'
 
 // 数字字形常量 (5x7 像素位图，用于水印)
@@ -23,32 +23,32 @@ const DIGITS = [
   [0,1,1,1,0, 1,0,0,0,1, 1,0,0,0,1, 0,1,1,1,1, 0,0,0,0,1, 1,0,0,0,1, 0,1,1,1,0], // 9
 ]
 
-// 质量优化常量
-const LARGE_IMAGE_MP = 4.0  // 大图定义: > 4MP
-const SMALL_IMAGE_MP = 0.5  // 小图定义: < 0.5MP
-const LARGE_IMAGE_QUALITY_DELTA = 10 // 大图质量降低
-const SMALL_IMAGE_QUALITY_DELTA = 5  // 小图质量提升
-
 /**
  * Canvas 图片处理器实例
  * 提供完整的图片处理 API
  */
 class CanvasImageProcessor {
   /**
-   * 根据图片尺寸计算最优 JPEG 质量
-   * 大图降低质量提升压缩率，小图提升质量增强视觉效果
+   * 字形位图缓存：5x7 的小画布，绘制水印时一次性放大贴上去。
+   * 原先逐像素 fillRect（一次最多上万次调用）在水印这一步就占掉了可观的耗时。
    */
-  private calculateOptimalQuality(width: number, height: number, baseQuality: number): number {
-    const megapixels = (width * height) / 1_000_000
+  private static glyphCache = new Map<number, Canvas>()
 
-    let adjusted = baseQuality
-    if (megapixels > LARGE_IMAGE_MP) {
-      adjusted = Math.max(1, baseQuality - LARGE_IMAGE_QUALITY_DELTA)
-    } else if (megapixels < SMALL_IMAGE_MP) {
-      adjusted = Math.min(100, baseQuality + SMALL_IMAGE_QUALITY_DELTA)
+  private getGlyphCanvas(digit: number): Canvas {
+    const cached = CanvasImageProcessor.glyphCache.get(digit)
+    if (cached) return cached
+
+    const canvas = createCanvas(GLYPH_WIDTH, GLYPH_HEIGHT) as Canvas
+    const gctx = canvas.getContext('2d')
+    gctx.fillStyle = '#000'
+    const glyph = DIGITS[Math.min(digit, 9)]
+    for (let gy = 0; gy < GLYPH_HEIGHT; gy++) {
+      for (let gx = 0; gx < GLYPH_WIDTH; gx++) {
+        if (glyph[gy * GLYPH_WIDTH + gx] !== 0) gctx.fillRect(gx, gy, 1, 1)
+      }
     }
-
-    return Math.max(1, Math.min(100, adjusted))
+    CanvasImageProcessor.glyphCache.set(digit, canvas)
+    return canvas
   }
 
   /**
@@ -62,210 +62,21 @@ class CanvasImageProcessor {
     scale: number,
     alpha: number
   ): void {
-    const glyph = DIGITS[Math.min(digit, 9)]
-    const width = ctx.canvas.width
-    const height = ctx.canvas.height
+    const glyph = this.getGlyphCanvas(digit)
+    const smoothing = ctx.imageSmoothingEnabled
+    const globalAlpha = ctx.globalAlpha
 
-    // 设置绘制样式
-    ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`
+    ctx.imageSmoothingEnabled = false
+    ctx.globalAlpha = alpha
+    ctx.drawImage(glyph, startX, startY, GLYPH_WIDTH * scale, GLYPH_HEIGHT * scale)
 
-    for (let gy = 0; gy < GLYPH_HEIGHT; gy++) {
-      for (let gx = 0; gx < GLYPH_WIDTH; gx++) {
-        const pixelOn = glyph[gy * GLYPH_WIDTH + gx] !== 0
-        if (!pixelOn) continue
-
-        // 放大每个字形像素
-        for (let sy = 0; sy < scale; sy++) {
-          for (let sx = 0; sx < scale; sx++) {
-            const x = startX + gx * scale + sx
-            const y = startY + gy * scale + sy
-
-            if (x < 0 || y < 0 || x >= width || y >= height) continue
-            ctx.fillRect(x, y, 1, 1)
-          }
-        }
-      }
-    }
+    ctx.imageSmoothingEnabled = smoothing
+    ctx.globalAlpha = globalAlpha
   }
 
   /**
-   * 添加随机像素噪点 (用于反和谐)
-   * @deprecated 当前策略使用水印替代噪点
-   */
-  private addNoise(imageData: ImageData, intensity: number): void {
-    const data = imageData.data
-    for (let i = 0; i < data.length; i += 4) {
-      const noise = (Math.random() - 0.5) * intensity * 2
-      data[i] = Math.max(0, Math.min(255, data[i] + noise))     // R
-      data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise)) // G
-      data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise)) // B
-      // data[i + 3] 保持 Alpha 不变
-    }
-  }
-
-  /**
-   * 将任意格式图片转换为 JPEG
-   * @param buffer 原始图片 Buffer
-   * @param quality JPEG 质量 (1-100)
-   * @returns JPEG 格式的 Buffer
-   */
-  async convertToJpeg(buffer: Uint8Array, quality: number): Promise<Uint8Array> {
-    try {
-      const img = new Image()
-      img.src = Buffer.from(buffer)
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve()
-        img.onerror = reject
-      })
-
-      // 直接使用用户配置的质量值，不进行自动调整
-      const finalQuality = Math.max(1, Math.min(100, quality))
-
-      const canvas = createCanvas(img.width, img.height)
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0)
-
-      return canvas.encode('jpeg', finalQuality)
-    } catch (error: any) {
-      throw new Error(`Failed to convert to JPEG: ${error?.message || String(error)}`)
-    }
-  }
-
-  /**
-   * WebP 转 JPEG (优化路径)
-   * @param buffer 原始图片 Buffer (任意格式)
-   * @param quality JPEG 质量
-   */
-  async webpToJpeg(buffer: Uint8Array, quality: number): Promise<Uint8Array> {
-    // Canvas 自动处理各种格式，无需特殊检测
-    return this.convertToJpeg(buffer, quality)
-  }
-
-  /**
-   * 将任意格式图片转换为 PNG
-   * @param buffer 原始图片 Buffer
-   * @returns PNG 格式的 Buffer
-   */
-  async convertToPng(buffer: Uint8Array): Promise<Uint8Array> {
-    try {
-      const img = new Image()
-      img.src = Buffer.from(buffer)
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve()
-        img.onerror = reject
-      })
-
-      const canvas = createCanvas(img.width, img.height)
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0)
-
-      return canvas.encode('png')
-    } catch (error: any) {
-      throw new Error(`Failed to convert to PNG: ${error?.message || String(error)}`)
-    }
-  }
-
-  /**
-   * 压缩 JPEG 图片
-   * @param buffer 原始 JPEG Buffer
-   * @param quality 目标质量
-   * @param skipThreshold 跳过阈值 (字节)，低于此值不压缩
-   */
-  async compressJpeg(buffer: Uint8Array, quality: number, skipThreshold: number): Promise<Uint8Array> {
-    if (skipThreshold > 0 && buffer.length < skipThreshold) {
-      return buffer
-    }
-    return this.convertToJpeg(buffer, quality)
-  }
-
-  /**
-   * 获取图片尺寸 (无需完整解码)
-   */
-  async getDimensions(buffer: Uint8Array): Promise<{ width: number; height: number }> {
-    try {
-      const img = new Image()
-      img.src = Buffer.from(buffer)
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve()
-        img.onerror = reject
-      })
-      return { width: img.width, height: img.height }
-    } catch (error: any) {
-      throw new Error(`Failed to get dimensions: ${error?.message || String(error)}`)
-    }
-  }
-
-  /**
-   * 应用轻量级抗审查处理并转换为 JPEG 格式
-   * 策略：在随机角落添加随机数字水印 (15% 不透明度)
-   *
-   * @param buffer 原始图片 Buffer
-   * @param noiseIntensity 噪点强度 (保留参数，当前未使用)
-   * @returns 处理后的 JPEG Buffer
-   */
-  async applyAntiCensorshipJpeg(buffer: Uint8Array, noiseIntensity?: number): Promise<Uint8Array> {
-    try {
-      const img = new Image()
-      img.src = Buffer.from(buffer)
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve()
-        img.onerror = reject
-      })
-
-      const { width, height } = img
-      const canvas = createCanvas(width, height)
-      const ctx = canvas.getContext('2d')
-
-      // 绘制原图
-      ctx.drawImage(img, 0, 0)
-
-      // 计算水印参数
-      const watermarkDigit = Math.floor(Math.random() * 10)
-      const fontSize = Math.max(8, Math.floor(width / 150))
-      const margin = Math.floor(fontSize / 2)
-      const position = Math.floor(Math.random() * 4) // 0=TL, 1=TR, 2=BR, 3=BL
-
-      const textW = GLYPH_WIDTH * fontSize
-      const textH = GLYPH_HEIGHT * fontSize
-
-      // 计算水印位置
-      let x: number, y: number
-      switch (position) {
-        case 0: // Top-Left
-          x = margin
-          y = margin
-          break
-        case 1: // Top-Right
-          x = width - margin - textW
-          y = margin
-          break
-        case 2: // Bottom-Right
-          x = width - margin - textW
-          y = height - margin - textH
-          break
-        default: // Bottom-Left
-          x = margin
-          y = height - margin - textH
-      }
-
-      // 绘制水印数字
-      this.drawDigit(ctx, watermarkDigit, x, y, fontSize, WATERMARK_OPACITY)
-
-      // 输出为 JPEG 格式
-      return canvas.encode('jpeg', 90)
-    } catch (error: any) {
-      throw new Error(`Failed to apply anti-censorship JPEG: ${error?.message || String(error)}`)
-    }
-  }
-
-  /**
-   * 应用轻量级抗审查处理并转换为 WebP 格式
-   * 策略：在随机角落添加随机数字水印 (15% 不透明度)
-   *
-   * @param buffer 原始图片 Buffer
-   * @param format 目标格式 ('jpeg' | 'png' | 'webp')
-   * @param quality 质量 (1-100)
-   * @returns 处理后的图片 Buffer
+   * 在随机角落叠加一个低透明度数字水印（5x7 字形放大绘制），再按 format 编码。
+   * 水印只改像素，不改变构图，用于降低被按图库指纹拦截的概率。
    */
   async applyAntiCensorship(buffer: Uint8Array, format: string = 'webp', quality: number = 90): Promise<Uint8Array> {
     try {
@@ -331,37 +142,41 @@ class CanvasImageProcessor {
     }
   }
 
-  /**
-   * 统一图片处理管道
-   * @param buffer 原始图片
-   * @param targetFormat 目标格式 ('jpeg' | 'png' | 'webp')
-   * @param quality 质量 (1-100)
-   * @param applyAntiCensor 是否应用反和谐
-   * @param noiseIntensity 噪点强度 (保留参数)
-   */
+  /** 图片最长边是否超过给定值，用于判断是否需要缩放 */
+  async exceedsEdge(buffer: Uint8Array, maxEdge: number): Promise<boolean> {
+    const img = await this.loadImage(buffer)
+    return Math.max(img.width, img.height) > maxEdge
+  }
+
+  /** 统一图片处理管道：解码一次，可选缩放，再编码到目标格式 */
   async processImage(
     buffer: Uint8Array,
     targetFormat: string,
     quality: number,
     applyAntiCensor: boolean,
-    noiseIntensity: number = 5.0
+    maxEdge: number = 0,
   ): Promise<Uint8Array> {
     // 如果需要反和谐处理
     if (applyAntiCensor) {
       return this.applyAntiCensorship(buffer, targetFormat, quality)
     }
 
-    // 标准格式转换
-    const img = new Image()
-    img.src = Buffer.from(buffer)
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve()
-      img.onerror = reject
-    })
+    const img = await this.loadImage(buffer)
 
-    const canvas = createCanvas(img.width, img.height)
+    let width = img.width
+    let height = img.height
+    if (maxEdge > 0 && Math.max(width, height) > maxEdge) {
+      const scale = maxEdge / Math.max(width, height)
+      width = Math.max(1, Math.round(width * scale))
+      height = Math.max(1, Math.round(height * scale))
+    }
+
+    const canvas = createCanvas(width, height)
     const ctx = canvas.getContext('2d')
-    ctx.drawImage(img, 0, 0)
+    // 缩放时开启平滑，避免出现锯齿
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(img, 0, 0, width, height)
 
     switch (targetFormat.toLowerCase()) {
       case 'jpeg':
@@ -376,26 +191,17 @@ class CanvasImageProcessor {
     }
   }
 
-  /**
-   * 批量转换图片为 JPEG
-   * @param buffers 图片 Buffer 数组
-   * @param quality JPEG 质量
-   * @returns 转换结果数组 (成功返回 Buffer，失败返回错误字符串)
-   */
-  async batchConvertToJpeg(buffers: Uint8Array[], quality: number): Promise<Array<Uint8Array | string>> {
-    const results = await Promise.allSettled(
-      buffers.map(buffer => this.convertToJpeg(buffer, quality))
-    )
-
-    return results.map((result, index) => {
-      if (result.status === 'fulfilled') {
-        return result.value
-      } else {
-        logger.warn(`批量转换失败 [${index}]: ${result.reason}`)
-        return `Error: ${result.reason.message || result.reason}`
-      }
+  /** 解码图片，失败时抛出带上下文的错误 */
+  private async loadImage(buffer: Uint8Array): Promise<Image> {
+    const img = new Image()
+    img.src = Buffer.from(buffer)
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('Image decode failed'))
     })
+    return img
   }
+
 }
 
 // 单例实例
@@ -422,11 +228,4 @@ export function ensureCanvasLoaded(): CanvasImageProcessor {
   return processorInstance
 }
 
-/**
- * 获取处理器实例 (如果未初始化则返回 null)
- */
-export function getCanvasProcessor(): CanvasImageProcessor | null {
-  return processorInstance
-}
-
-export { CanvasImageProcessor, createCanvas, loadImage, Image, GlobalFonts }
+export { CanvasImageProcessor, createCanvas, Image, GlobalFonts }
