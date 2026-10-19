@@ -23,16 +23,24 @@ export class MenuService {
     session: Session,
     galleries: MenuGallery[],
     totalResults?: number,
-    startIndex?: number
+    startIndex?: number,
+    pageInfo?: { page: number; totalPages: number },
   ): Promise<MenuGallery[]> {
     try {
       const maxItems = this.config.menuMode.columns * this.config.menuMode.maxRows
       const displayGalleries = galleries.slice(0, maxItems)
 
-      const covers = await this.nhentaiService.getCoversForGalleries(displayGalleries)
+      // 缩略图会合成进菜单图片，水印无意义（原图指纹已不可比），跳过一次重编码
+      const covers = await this.nhentaiService.getCoversForGalleries(displayGalleries, { watermark: false })
       const thumbnails = displayGalleries.map(gallery => covers.get(String(gallery.id))?.buffer ?? Buffer.alloc(0))
 
-      const menuImage = await this.menuGenerator.generateMenu(displayGalleries, thumbnails, totalResults, startIndex)
+      const menuImage = await this.menuGenerator.generateMenu(
+        displayGalleries,
+        thumbnails,
+        totalResults,
+        startIndex,
+        pageInfo,
+      )
 
       await session.send(h.image(menuImage, 'image/jpeg'))
 

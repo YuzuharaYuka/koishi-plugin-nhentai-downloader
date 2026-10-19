@@ -9,7 +9,7 @@ import { normalizeSortOption } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
 import { handleIdSearch, handleKeywordSearch, handleKeywordSearchWithMenu, handleIdSearchWithMenu, handleRandomWithInteraction, SearchOptions } from './handlers'
-import { handleDownloadCommand, DownloadOptions } from './handlers'
+import { handleCancelCommand, handleDownloadCommand, handleRetryCommand, DownloadOptions } from './handlers'
 import { galleryIdRegex, LANGUAGE_DISPLAY_MAP, VALID_SORT_OPTIONS, VALID_LANG_OPTIONS } from './constants'
 
 export function registerSearchCommands(
@@ -110,6 +110,7 @@ export function registerDownloadCommands(
     .option('zip', '-z 以 ZIP 压缩包发送')
     .option('image', '-i 逐张发送图片')
     .option('key', '-k <password:string> 为 PDF / ZIP 设置密码')
+    .option('noPassword', '--no-password 不加密，忽略默认密码')
     .action(async ({ session, options }, idOrUrl) => {
       if (!session) return
       options = options || {}
@@ -129,6 +130,24 @@ export function registerDownloadCommands(
         logger.error(`[下载] 任务 ID ${id} 失败: %o`, error)
         await session.send(h('quote', { id: session.messageId }) + `指令执行失败: ${getErrorMessage(error)}`)
       }
+    })
+
+  nhCmd
+    .subcommand('.cancel', '取消当前进行中的下载')
+    .alias('nh取消')
+    .action(async ({ session }) => {
+      if (!session) return
+      if (!ensureInitialized(session)) return
+      await handleCancelCommand(session, getNhentaiService())
+    })
+
+  nhCmd
+    .subcommand('.retry', '只补下上一次逐张下载失败的页')
+    .alias('nh重试')
+    .action(async ({ session }) => {
+      if (!session) return
+      if (!ensureInitialized(session)) return
+      await handleRetryCommand(session, getNhentaiService(), config, ctx.baseDir)
     })
 }
 

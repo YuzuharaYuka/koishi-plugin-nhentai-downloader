@@ -14,6 +14,7 @@ import type { Gallery } from '../types'
 import { ApiService } from './api'
 import { readArchiveImages } from './archive'
 import { pdfProcessVariant } from '../processors/images'
+import { CANCELLED, TaskCancelledError, type DownloadTask } from './task'
 import type { DownloadOutput } from './nhentai'
 
 interface ImageUrl {
@@ -60,23 +61,28 @@ class BatchNotifier {
   }
 }
 
+/** 逐页下载进度：节流后写日志，同时把文案交给可选回调（基准脚本用） */
 function createThrottledProgressUpdate(
-  onProgress: (status: string) => Promise<void>,
+  galleryId: string,
+  onProgress?: (status: string) => Promise<void>,
   intervalMs: number = PROGRESS_UPDATE_INTERVAL_MS,
 ) {
   let lastProgressUpdate = 0
-  return async (downloaded: number, processed: number, total: number) => {
+  return async (_downloaded: number, processed: number, total: number) => {
     const now = Date.now()
-    if (now - lastProgressUpdate > intervalMs) {
-      await onProgress(`下载: ${downloaded}/${total} | 处理: ${processed}/${total}`)
-      lastProgressUpdate = now
-    }
+    if (now - lastProgressUpdate <= intervalMs) return
+    lastProgressUpdate = now
+    const status = `画廊 ${galleryId}: 已下载 ${processed}/${total} 张`
+    logger.info(status)
+    if (onProgress) await onProgress(status)
   }
 }
 
-/** 官方压缩包下载进度（按字节），同样做节流 */
+/** 压缩包下载进度（按字节），节流后写日志 */
 function createArchiveProgressUpdate(
-  onProgress: (status: string) => Promise<void>,
+  galleryId: string,
+  pageCount: number,
+  onProgress?: (status: string) => Promise<void>,
   intervalMs = 3000,
 ): (downloaded: number, total: number | null) => void {
   let last = 0
@@ -85,11 +91,10 @@ function createArchiveProgressUpdate(
     if (now - last < intervalMs) return
     last = now
     const mb = (downloaded / 1024 / 1024).toFixed(1)
-    const status = total
-      ? `正在下载官方压缩包: ${((downloaded / total) * 100).toFixed(0)}% (${mb}/${(total / 1024 / 1024).toFixed(1)} MB)`
-      : `正在下载官方压缩包: ${mb} MB`
-    // 进度回调是异步的，这里不阻塞下载流
-    void onProgress(status)
+    const suffix = total ? ` / ${(total / 1024 / 1024).toFixed(1)} MB` : ''
+    const status = `画廊 ${galleryId}: 已下载 ${mb}${suffix}（共 ${pageCount} 页）`
+    logger.info(status)
+    if (onProgress) void onProgress(status)
   }
 }
 
@@ -173,6 +178,7 @@ export class StreamProcessor {
     mediaId: string,
     imageUrls: ImageUrl[],
     onProgress?: (processed: number, total: number) => Promise<void>,
+    task?: DownloadTask,
   ): AsyncGenerator<DownloadedImage> {
     const failedIndexes: number[] = []
     const imageQueue = [...imageUrls]
@@ -185,6 +191,7 @@ export class StreamProcessor {
 
     const worker = async () => {
       while (imageQueue.length > 0) {
+        if (task?.cancelled) return
         const item = imageQueue.shift()
         if (!item) continue
 
@@ -224,6 +231,7 @@ export class StreamProcessor {
     })
 
     while (nextExpectedIndex < imageUrls.length) {
+      task?.throwIfCancelled()
       const image = downloadedImages.get(nextExpectedIndex)
       if (image) {
         downloadedImages.delete(nextExpectedIndex)
@@ -258,6 +266,7 @@ export class StreamProcessor {
     mediaId: string,
     imageUrls: ImageUrl[],
     onProgress?: (downloaded: number, processed: number, total: number) => Promise<void>,
+    task?: DownloadTask,
   ): AsyncGenerator<DownloadedImage> {
     const downloadQueue = [...imageUrls]
     const processedBuffer = new Map<number, CachedDownloadedImage>()
@@ -272,6 +281,7 @@ export class StreamProcessor {
 
     const downloadWorker = async () => {
       while (downloadQueue.length > 0) {
+        if (task?.cancelled) return
         const item = downloadQueue.shift()
         if (!item) continue
 
@@ -369,49 +379,85 @@ export class DownloadManager {
     id: string,
     outputType: 'pdf' | 'zip' | 'img',
     password?: string,
-    onProgress: (status: string) => Promise<void> = async () => {},
+    onProgress?: (status: string) => Promise<void>,
+    task?: DownloadTask,
+    options: { onlyIndexes?: number[] } = {},
   ): Promise<DownloadOutput | { error: string }> {
     const gallery = await this.apiService.getGallery(id)
     if (!gallery) {
       return { error: `获取画廊 ${id} 信息失败，请检查ID或链接是否正确。` }
     }
 
-    const filename = this.generateFilename(gallery, id)
-
-    // ① 优先走官方打包直链（可用时）：官方服务端打包 → 本地解压 → 复用同一套 PDF/ZIP/图片流程
-    if (this.shouldUseOfficialArchive(gallery)) {
-      const result = await this.tryOfficialArchive(gallery, outputType, password, filename, onProgress)
-      if (result) return result
-      logger.warn(`画廊 ${id}: 官方压缩包不可用，回退到 CDN 逐页下载`)
-    }
-
-    // ② CDN 逐页下载
-    const imageUrls = await this.streamProcessor.generateImageUrls(gallery)
-    await onProgress(`画廊信息获取成功，共 ${imageUrls.length} 页图片。`)
-
     const galleryId = String(gallery.id)
-    const throttled = createThrottledProgressUpdate(onProgress)
+    const pageCount = gallery.images.pages.length
+    const filename = this.generateFilename(gallery, id)
+    const only = options.onlyIndexes?.length
+      ? new Set(options.onlyIndexes.filter((index) => index >= 0 && index < pageCount))
+      : null
 
-    if (outputType === 'img') {
-      const stream = this.streamProcessor.createImageStream(
+    logger.info(
+      `画廊 ${galleryId}: 共 ${pageCount} 页，输出 ${outputType.toUpperCase()}` +
+        (only ? `，仅重试 ${only.size} 页` : ''),
+    )
+
+    try {
+      task?.throwIfCancelled()
+
+      // ① 优先走官方打包直链（可用时）：官方服务端打包 → 本地解压 → 复用同一套 PDF/ZIP/图片流程
+      if (this.shouldUseOfficialArchive(gallery)) {
+        const result = await this.tryOfficialArchive(
+          gallery,
+          outputType,
+          password,
+          filename,
+          onProgress,
+          task,
+          only,
+        )
+        if (result) return result
+        logger.debug(`画廊 ${galleryId}: 压缩包不可用，改为逐页下载`)
+      }
+
+      // ② CDN 逐页下载
+      const allUrls = await this.streamProcessor.generateImageUrls(gallery)
+      const imageUrls = only ? allUrls.filter((item) => only.has(item.index)) : allUrls
+
+      const throttled = createThrottledProgressUpdate(galleryId, onProgress)
+
+      if (outputType === 'img') {
+        const stream = this.streamProcessor.createImageStream(
+          galleryId,
+          gallery.media_id,
+          imageUrls,
+          async (processed, total) => throttled(0, processed, total),
+          task,
+        )
+        return this.downloadAsImages(
+          stream,
+          filename,
+          imageUrls.length,
+          () => this.streamProcessor.getLastFailedIndexes(),
+          task,
+        )
+      }
+
+      const stream = this.streamProcessor.createPackageStream(
         galleryId,
         gallery.media_id,
         imageUrls,
-        async (processed, total) => throttled(0, processed, total),
+        throttled,
+        task,
       )
-      return this.downloadAsImages(
-        stream,
-        filename,
-        imageUrls.length,
-        () => this.streamProcessor.getLastFailedIndexes(),
-        onProgress,
-      )
+      return outputType === 'pdf'
+        ? this.downloadAsPdf(stream, galleryId, filename, password, onProgress, task)
+        : this.downloadAsZip(stream, filename, password, task)
+    } catch (error) {
+      if (error instanceof TaskCancelledError || task?.cancelled) {
+        logger.info(`画廊 ${galleryId}: 下载已取消`)
+        return { error: CANCELLED }
+      }
+      return handleDownloadError(error as Error, '下载')
     }
-
-    const stream = this.streamProcessor.createPackageStream(galleryId, gallery.media_id, imageUrls, throttled)
-    return outputType === 'pdf'
-      ? this.downloadAsPdf(stream, galleryId, filename, password, onProgress)
-      : this.downloadAsZip(stream, filename, password)
   }
 
   // ─── 官方打包直链 ──────────────────────────────────────────
@@ -446,16 +492,19 @@ export class DownloadManager {
     outputType: 'pdf' | 'zip' | 'img',
     password: string | undefined,
     filename: string,
-    onProgress: (status: string) => Promise<void>,
+    onProgress: ((status: string) => Promise<void>) | undefined,
+    task?: DownloadTask,
+    only?: Set<number> | null,
   ): Promise<DownloadOutput | { error: string } | null> {
     const galleryId = String(gallery.id)
+    const pageCount = gallery.images.pages.length
 
     const issued = await this.apiService.getGalleryDownloadUrl(galleryId, 'zip')
     if (!issued) return null
 
     const expiresInMs = issued.expires_at * 1000 - Date.now()
     if (expiresInMs < 10_000) {
-      logger.warn(`画廊 ${galleryId}: 官方直链仅剩 ${Math.round(expiresInMs / 1000)}s 有效期，改用 CDN`)
+      logger.debug(`画廊 ${galleryId}: 链接仅剩 ${Math.round(expiresInMs / 1000)}s 有效期，改为逐页下载`)
       return null
     }
 
@@ -464,24 +513,26 @@ export class DownloadManager {
 
     try {
       await mkdir(dir, { recursive: true })
-      await onProgress('正在从官方直链获取压缩包...')
+      task?.throwIfCancelled()
 
       const startedAt = Date.now()
       const size = await this.apiService.imageHttp.download(issued.url, archivePath, {
         timeoutMs: this.config.officialArchiveTimeout * 1000,
         referer: `https://nhentai.net/g/${galleryId}/`,
-        onProgress: createArchiveProgressUpdate(onProgress),
+        onProgress: createArchiveProgressUpdate(galleryId, pageCount, onProgress),
+        signal: task?.signal,
       })
       const seconds = (Date.now() - startedAt) / 1000
       logger.info(
-        `画廊 ${galleryId}: 官方压缩包 ${(size / 1024 / 1024).toFixed(2)} MB，用时 ${seconds.toFixed(1)}s ` +
-          `(${(size / 1024 / 1024 / Math.max(seconds, 0.001)).toFixed(2)} MB/s)，开始解压`,
+        `画廊 ${galleryId}: 下载完成 ${(size / 1024 / 1024).toFixed(2)} MB，用时 ${seconds.toFixed(1)}s ` +
+          `(${(size / 1024 / 1024 / Math.max(seconds, 0.001)).toFixed(2)} MB/s)，共 ${pageCount} 页，开始处理`,
       )
 
-      const stream = this.createOfficialImageStream(gallery, archivePath)
-      return await this.writeOutput(stream, gallery, outputType, password, filename, onProgress, () => [])
+      const stream = this.createOfficialImageStream(gallery, archivePath, only)
+      return await this.writeOutput(stream, gallery, outputType, password, filename, onProgress, () => [], task)
     } catch (error) {
-      logger.warn(`画廊 ${galleryId}: 官方压缩包处理失败（${getErrorMessage(error)}）`)
+      if (error instanceof TaskCancelledError || task?.cancelled) throw new TaskCancelledError()
+      logger.warn(`画廊 ${galleryId}: 压缩包处理失败（${getErrorMessage(error)}）`)
       return null
     } finally {
       await rm(archivePath, { force: true }).catch(() => undefined)
@@ -492,11 +543,13 @@ export class DownloadManager {
   private async *createOfficialImageStream(
     gallery: Gallery,
     archivePath: string,
+    only?: Set<number> | null,
   ): AsyncGenerator<DownloadedImage> {
     const galleryId = String(gallery.id)
     const imageCache = this.processor.getImageCache()
 
     for await (const image of readArchiveImages(archivePath, { expectedPages: gallery.num_pages })) {
+      if (only && !only.has(image.index)) continue
       if (imageCache) {
         await imageCache
           .set(galleryId, gallery.media_id, image.index, image.buffer, image.extension, false)
@@ -520,15 +573,16 @@ export class DownloadManager {
     outputType: 'pdf' | 'zip' | 'img',
     password: string | undefined,
     filename: string,
-    onProgress: (status: string) => Promise<void>,
+    onProgress: ((status: string) => Promise<void>) | undefined,
     failures: () => number[],
+    task?: DownloadTask,
   ): Promise<DownloadOutput | { error: string }> {
     if (outputType === 'img') {
-      return this.downloadAsImages(stream, filename, gallery.images.pages.length, failures, onProgress)
+      return this.downloadAsImages(stream, filename, gallery.images.pages.length, failures, task)
     }
     return outputType === 'pdf'
-      ? this.downloadAsPdf(stream, String(gallery.id), filename, password, onProgress)
-      : this.downloadAsZip(stream, filename, password)
+      ? this.downloadAsPdf(stream, String(gallery.id), filename, password, onProgress, task)
+      : this.downloadAsZip(stream, filename, password, task)
   }
 
   private generateFilename(gallery: Gallery, id: string): string {
@@ -559,18 +613,26 @@ export class DownloadManager {
     filename: string,
     totalPages: number,
     failures: () => number[],
-    onProgress: (status: string) => Promise<void>,
+    task?: DownloadTask,
   ): Promise<DownloadOutput | { error: string }> {
     const images: DownloadedImage[] = []
-    const throttledUpdate = createThrottledProgressUpdate(onProgress)
 
     try {
       let processed = 0
       for await (const image of stream) {
+        task?.throwIfCancelled()
         images.push(image)
         processed++
-        await throttledUpdate(0, processed, totalPages)
+        if (totalPages > 0 && processed % 10 === 0) {
+          logger.info(`已处理 ${processed}/${totalPages} 张`)
+        }
       }
+
+      const failedIndexes = failures()
+      logger.info(
+        `图片处理完成: ${images.length}/${totalPages} 张` +
+          (failedIndexes.length ? `，${failedIndexes.length} 张失败` : ''),
+      )
 
       if (images.length === 0) {
         return { error: '所有图片下载失败。' }
@@ -580,9 +642,10 @@ export class DownloadManager {
         type: 'images',
         images,
         filename,
-        failedIndexes: failures(),
+        failedIndexes,
       }
     } catch (error: any) {
+      if (error instanceof TaskCancelledError || task?.cancelled) throw new TaskCancelledError()
       return handleDownloadError(error, '下载图片')
     }
   }
@@ -592,14 +655,16 @@ export class DownloadManager {
     galleryId: string,
     filename: string,
     password: string | undefined,
-    onProgress: (status: string) => Promise<void>,
+    onProgress?: (status: string) => Promise<void>,
+    task?: DownloadTask,
   ): Promise<DownloadOutput | { error: string }> {
     const pdfCache = this.processor.getPdfCache()
 
     if (pdfCache) {
       const cachedPath = await pdfCache.get(galleryId, password)
       if (cachedPath) {
-        await onProgress('从缓存加载 PDF')
+        logger.info(`画廊 ${galleryId}: 命中 PDF 缓存`)
+        if (onProgress) await onProgress('从缓存加载 PDF')
         return {
           type: 'pdf',
           path: cachedPath,
@@ -610,7 +675,7 @@ export class DownloadManager {
     }
 
     try {
-      const pdfPath = await this.processor.createPdf(stream, galleryId, onProgress, password)
+      const pdfPath = await this.processor.createPdf(stream, galleryId, onProgress, password, task)
 
       if (!pdfPath) {
         return { error: 'PDF 生成失败。' }
@@ -642,6 +707,7 @@ export class DownloadManager {
         isTemporary: true,
       }
     } catch (error: any) {
+      if (error instanceof TaskCancelledError || task?.cancelled) throw new TaskCancelledError()
       return handleDownloadError(error, '生成 PDF')
     }
   }
@@ -650,6 +716,7 @@ export class DownloadManager {
     stream: AsyncIterable<DownloadedImage>,
     filename: string,
     password: string | undefined,
+    task?: DownloadTask,
   ): Promise<DownloadOutput | { error: string }> {
     try {
       const zipBuffer = await this.processor.createZip(stream, password, filename)
@@ -664,6 +731,7 @@ export class DownloadManager {
         filename: `${filename}.zip`,
       }
     } catch (error: any) {
+      if (error instanceof TaskCancelledError || task?.cancelled) throw new TaskCancelledError()
       return handleDownloadError(error, '生成 ZIP')
     }
   }

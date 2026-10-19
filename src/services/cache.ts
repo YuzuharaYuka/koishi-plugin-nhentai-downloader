@@ -147,7 +147,7 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
   private saveLock: Promise<void> | null = null
   private cleanupLock: Promise<void> | null = null
 
-  constructor(protected config: Config, baseDir: string, cacheName: string, maxSizeConfig: number, ttlConfig: number) {
+  constructor(protected config: Config, baseDir: string, protected cacheName: string, maxSizeConfig: number, ttlConfig: number) {
     this.cacheDir = path.resolve(baseDir, config.downloadPath, cacheName)
     this.indexFile = path.resolve(this.cacheDir, 'index.json')
     this.maxCacheSize = maxSizeConfig
@@ -242,6 +242,40 @@ abstract class BaseCache<T extends { galleryId: string; filePath: string; cached
 
   // 删除条目的抽象方法
   protected abstract deleteEntry(entry: T): void
+
+  /**
+   * 后台删除过期缓存文件。
+   *
+   * 不阻塞启动；删除前会复查索引里是否已存在同一路径（可能刚被重新下载写入）。
+   */
+  protected cleanupExpiredFiles(paths: string[]): void {
+    const livePaths = new Set(Array.from(this.entries.values()).map((entry) => entry.filePath))
+    const pending = paths.filter((filePath) => !livePaths.has(filePath))
+    if (pending.length === 0) return
+
+    void (async () => {
+      const CHUNK = 32
+      let removed = 0
+      for (let start = 0; start < pending.length; start += CHUNK) {
+        await Promise.all(
+          pending.slice(start, start + CHUNK).map(async (filePath) => {
+            if (Array.from(this.entries.values()).some((entry) => entry.filePath === filePath)) return
+            try {
+              await fs.unlink(filePath)
+              removed++
+            } catch {
+              // 文件已不存在或正被占用，交给下一轮
+            }
+          }),
+        )
+        // 让出事件循环，避免长时间占用
+        await new Promise((resolve) => setImmediate(resolve))
+      }
+      if (this.config.debug) logger.info(`${this.cacheName}: 后台清理完成，删除 ${removed} 个文件`)
+    })().catch((error) => {
+      logger.warn(`${this.cacheName}: 后台清理失败（${error instanceof Error ? error.message : String(error)}）`)
+    })
+  }
 
   protected async saveIndex(entries?: T[]): Promise<void> {
     // 并发保护：如果正在保存，等待完成
@@ -366,30 +400,41 @@ export class ImageCache extends BaseCache<CacheEntry> {
       const index = JSON.parse(data) as CacheEntry[]
       const validEntries: CacheEntry[] = []
 
+      // 条目较多时逐个 access/unlink 会明显拖慢启动（实测 770 条约 20 秒），
+      // 这里按固定并发处理：超出有效期的文件并发删除，索引重建顺序无关紧要
+      if (index.length > 100 && this.config.debug) {
+        logger.info(`正在加载 ${index.length} 个 ${this.cacheName} 条目…`)
+      }
+      const expiredPaths: string[] = []
+      // 加载阶段只按时间判断过期，不做 fs.access：
+      // 823 条实测要多花 13 秒（libuv 线程池只有 4 线程，且要过杀软扫描），
+      // 而文件缺失在 get() 里本来就会兜底（读失败即视为未缓存并删除条目）
       for (const entry of index) {
-        try {
-          await fs.access(entry.filePath)
-          if (Date.now() - entry.cachedAt < this.cacheTTL) {
-            entry.lastAccessed = entry.lastAccessed || entry.cachedAt
-            entry.accessCount = entry.accessCount || 1
-            // 早期索引里 processed 是布尔，现在改为参数指纹；旧值统一视作 legacy
-            const rawProcessed = entry.processed as unknown
-            if (typeof rawProcessed === 'boolean') entry.processed = rawProcessed ? 'legacy' : undefined
-            validEntries.push(entry)
-            this.entries.set(
-              this.getCacheKey(entry.galleryId, entry.mediaId, entry.pageIndex, entry.isThumb, entry.processed),
-              entry,
-            )
-          } else {
-            await fs.unlink(entry.filePath).catch(() => {})
-          }
-        } catch {
-          // 忽略索引项加载错误
+        const expired = this.cacheTTL !== Infinity && Date.now() - entry.cachedAt >= this.cacheTTL
+        if (expired) {
+          // 过期文件先记下来，等索引写完后在后台删除，避免拖慢启动
+          expiredPaths.push(entry.filePath)
+          continue
         }
+        entry.lastAccessed = entry.lastAccessed || entry.cachedAt
+        entry.accessCount = entry.accessCount || 1
+        // 早期索引里 processed 是布尔，现在改为参数指纹；旧值统一视作 legacy
+        const rawProcessed = entry.processed as unknown
+        if (typeof rawProcessed === 'boolean') entry.processed = rawProcessed ? 'legacy' : undefined
+        validEntries.push(entry)
+        this.entries.set(
+          this.getCacheKey(entry.galleryId, entry.mediaId, entry.pageIndex, entry.isThumb, entry.processed),
+          entry,
+        )
       }
 
       await this.saveIndex(validEntries)
       if (this.config.debug) logger.info(`加载 ${validEntries.length} 个图片缓存条目`)
+
+      if (expiredPaths.length > 0) {
+        this.cleanupExpiredFiles(expiredPaths)
+        logger.info(`image-cache: ${expiredPaths.length} 个过期文件转入后台清理`)
+      }
     } catch (error) {
       const err = error as any
       if (err.code !== 'ENOENT') {
@@ -640,26 +685,26 @@ export class PdfCache extends BaseCache<PdfCacheEntry> {
       const index = JSON.parse(data) as PdfCacheEntry[]
       const validEntries: PdfCacheEntry[] = []
 
+      const expiredPaths: string[] = []
       for (const entry of index) {
-        try {
-          await fs.access(entry.filePath)
-          const isExpired = this.cacheTTL !== Infinity && (Date.now() - entry.cachedAt >= this.cacheTTL)
-
-          if (!isExpired) {
-            entry.lastAccessed = entry.lastAccessed || entry.cachedAt
-            entry.accessCount = entry.accessCount || 1
-            validEntries.push(entry)
-            this.entries.set(this.getCacheKey(entry.galleryId, entry.password), entry)
-          } else {
-            await fs.unlink(entry.filePath).catch(() => {})
-          }
-        } catch {
-          // 忽略索引项加载错误
+        const isExpired = this.cacheTTL !== Infinity && Date.now() - entry.cachedAt >= this.cacheTTL
+        if (isExpired) {
+          expiredPaths.push(entry.filePath)
+          continue
         }
+        entry.lastAccessed = entry.lastAccessed || entry.cachedAt
+        entry.accessCount = entry.accessCount || 1
+        validEntries.push(entry)
+        this.entries.set(this.getCacheKey(entry.galleryId, entry.password), entry)
       }
 
       await this.saveIndex(validEntries)
       if (this.config.debug) logger.info(`加载 ${validEntries.length} 个 PDF 缓存条目`)
+
+      if (expiredPaths.length > 0) {
+        this.cleanupExpiredFiles(expiredPaths)
+        logger.info(`pdf-cache: ${expiredPaths.length} 个过期文件转入后台清理`)
+      }
     } catch (error) {
       const err = error as any
       if (err.code !== 'ENOENT') {

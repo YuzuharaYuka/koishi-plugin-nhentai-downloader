@@ -9,7 +9,8 @@ import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
 import { FORWARD_SUPPORTED_PLATFORMS, TAG_DISPLAY_LIMIT, type ValidSortOption } from './constants'
-import { readFile, rm } from 'fs/promises'
+import { CANCELLED } from './services/task'
+import { rm } from 'fs/promises'
 import { pathToFileURL } from 'url'
 
 export interface DownloadOptions {
@@ -17,6 +18,7 @@ export interface DownloadOptions {
   zip?: boolean
   image?: boolean
   key?: string
+  noPassword?: boolean
 }
 
 export interface SearchOptions {
@@ -355,7 +357,7 @@ export async function handleRandomWithInteraction(
 
       if (config.searchMode === 'menu' && menuService) {
         // 菜单模式
-        const result = await nhentaiService.getGalleryWithCover(randomId)
+        const result = await nhentaiService.getGalleryWithCover(randomId, { watermark: false })
         if (!result) {
           await session.send(`获取画廊 ${randomId} 信息失败。`)
           break
@@ -478,7 +480,8 @@ export async function handleIdSearchWithMenu(
   menuService: MenuService,
   config: Config,
 ): Promise<void> {
-  const result = await nhentaiService.getGalleryWithCover(id)
+  // 详情卡片会把封面合成进图片，无需水印
+  const result = await nhentaiService.getGalleryWithCover(id, { watermark: false })
   if (!result) {
     await session.send(`获取画廊 ${id} 信息失败，请检查ID是否正确。`)
     return
@@ -582,7 +585,9 @@ export async function handleKeywordSearchWithMenu(
       apiService,
       config,
       async (displayedResults, startIndex, totalResults) => {
-        await menuService.sendSearchMenu(session, displayedResults, totalResults, startIndex)
+        const totalPages = Math.max(1, Math.ceil(totalResults / Math.max(limit, 1)))
+        const page = Math.floor(startIndex / Math.max(limit, 1)) + 1
+        await menuService.sendSearchMenu(session, displayedResults, totalResults, startIndex, { page, totalPages })
       },
       async (galleryId) => {
         await session.execute(`nh.download ${galleryId}`)
@@ -668,6 +673,11 @@ export function outputDisplayName(filename: string): string {
   return filename.replace(/\.(pdf|zip)$/i, '')
 }
 
+/** 下载任务的会话键：同一用户在不同频道互不影响 */
+function taskKey(session: Session): string {
+  return `${session.platform}:${session.guildId ?? session.channelId}:${session.userId}`
+}
+
 export async function handleDownloadCommand(
   session: Session,
   id: string,
@@ -675,17 +685,48 @@ export async function handleDownloadCommand(
   nhentaiService: NhentaiService,
   config: Config,
   baseDir?: string,
+  retry?: { onlyIndexes: number[] },
 ): Promise<void> {
   let tempPdfPath: string | undefined, shouldCleanupPdf = false
 
-  try {
-    const outputType: 'zip' | 'pdf' | 'img' = options.pdf ? 'pdf' : options.zip ? 'zip' : options.image ? 'img' : config.defaultOutput, password = options.key || config.defaultPassword
+  const outputType: 'pdf' | 'zip' | 'img' = options.pdf
+    ? 'pdf'
+    : options.zip
+      ? 'zip'
+      : options.image
+        ? 'img'
+        : retry
+          ? 'img'
+          : config.defaultOutput
+  const password = options.noPassword
+    ? undefined
+    : options.key || config.defaultPassword
 
-    const result = await nhentaiService.downloadGallery(id, outputType, password)
+  const key = taskKey(session)
+  const task = nhentaiService.tasks.start(key, id, outputType, 0)
+
+  try {
+    const result = await nhentaiService.downloadGallery(
+      id,
+      outputType,
+      password,
+      undefined,
+      task,
+      retry ? { onlyIndexes: retry.onlyIndexes } : {},
+    )
 
     if ('error' in result) {
-      await session.send(result.error)
+      if (result.error === CANCELLED) {
+        await session.send('已取消下载。')
+      } else {
+        await session.send(result.error)
+      }
       return
+    }
+
+    // 逐张模式记录失败页，便于 nh.retry 只补下这几页
+    if (result.type === 'images') {
+      nhentaiService.tasks.setFailed(key, id, result.failedIndexes)
     }
 
     // 只有 PDF / ZIP 带扩展名；逐张图片的 filename 是裸标题，不能按 '.' 切分
@@ -702,36 +743,27 @@ export async function handleDownloadCommand(
       case 'pdf':
         tempPdfPath = result.path
         shouldCleanupPdf = result.isTemporary
-        if (config.fileSendMethod === 'buffer') {
-          const pdfBuffer = await readFile(tempPdfPath)
-          await session.send(h.file(pdfBuffer, 'application/pdf', { title: result.filename }))
-        } else {
-          await session.send(h.file(pathToFileURL(tempPdfPath).href, { title: result.filename }))
-        }
+        await session.send(h.file(pathToFileURL(tempPdfPath).href, { title: result.filename }))
         break
 
-      case 'zip':
-        if (config.fileSendMethod === 'buffer') {
-          await session.send(h.file(result.buffer, 'application/zip', { title: result.filename }))
-        } else {
-          // file 模式：将 ZIP 保存为临时文件后发送文件路径
-          const { writeFile, mkdir, rm: rmFile } = await import('fs/promises')
-          const { join, resolve, dirname } = await import('path')
-          // 使用 baseDir 解析绝对路径，确保在 Docker 容器中正确工作
-          const downloadDir = baseDir ? resolve(baseDir, config.downloadPath) : config.downloadPath
-          const tempZipPath = join(downloadDir, `temp_${id}_${Date.now()}.zip`)
-          await mkdir(dirname(tempZipPath), { recursive: true })
-          await writeFile(tempZipPath, result.buffer)
-          try {
-            await session.send(h.file(pathToFileURL(tempZipPath).href, { title: result.filename }))
-          } finally {
-            // 无论发送成功与否都清理，避免失败时残留大文件
-            await rmFile(tempZipPath, { force: true }).catch((e) => {
-              if (config.debug) logger.warn('删除临时 ZIP 文件失败: %o', e)
-            })
-          }
+      case 'zip': {
+        // 先落盘再发路径：OneBot 等适配器只接受文件路径
+        const { writeFile, mkdir, rm: rmFile } = await import('fs/promises')
+        const { join, resolve, dirname } = await import('path')
+        const downloadDir = baseDir ? resolve(baseDir, config.downloadPath) : config.downloadPath
+        const tempZipPath = join(downloadDir, `temp_${id}_${Date.now()}.zip`)
+        await mkdir(dirname(tempZipPath), { recursive: true })
+        await writeFile(tempZipPath, result.buffer)
+        try {
+          await session.send(h.file(pathToFileURL(tempZipPath).href, { title: result.filename }))
+        } finally {
+          // 无论发送成功与否都清理，避免失败时残留大文件
+          await rmFile(tempZipPath, { force: true }).catch((e) => {
+            if (config.debug) logger.warn('删除临时 ZIP 文件失败: %o', e)
+          })
         }
         break
+      }
 
       case 'images':
         const useForward = config.useForwardForDownload && FORWARD_SUPPORTED_PLATFORMS.includes(session.platform), imageElements = result.images
@@ -740,8 +772,12 @@ export async function handleDownloadCommand(
           const imageMessages = imageElements
             .filter((item) => !!item.buffer)
             .map((item) => h('message', {}, [h.image(bufferToDataURI(item.buffer as Buffer, `image/${item.extension}`))]))
-          if (imageMessages.length > 0) {
-            await session.send(h('message', { forward: true }, imageMessages))
+          // 一次转发塞几十张图容易超过平台限制，分批发送
+          const batchSize = 20
+          for (let i = 0; i < imageMessages.length; i += batchSize) {
+            const batch = imageMessages.slice(i, i + batchSize)
+            await session.send(h('message', { forward: true }, batch))
+            if (i + batchSize < imageMessages.length) await sleep(600)
           }
         } else {
           for (let i = 0; i < imageElements.length; i++) {
@@ -757,12 +793,15 @@ export async function handleDownloadCommand(
 
         if (result.failedIndexes.length > 0) {
           const failedPages = result.failedIndexes.map((i) => i + 1).join(', ')
-          await session.send(`有 ${result.failedIndexes.length} 张图片下载失败，页码为: ${failedPages}。`)
+          await session.send(
+            `有 ${result.failedIndexes.length} 张图片下载失败，页码为: ${failedPages}。发送 nh.retry 可只补下这几页。`,
+          )
         }
         break
     }
     await session.send(successMessage)
   } finally {
+    nhentaiService.tasks.finish(key, task)
     if (tempPdfPath && shouldCleanupPdf) {
       try {
         await rm(tempPdfPath, { force: true })
@@ -772,4 +811,42 @@ export async function handleDownloadCommand(
       }
     }
   }
+}
+
+/** nh.cancel：取消当前会话进行中的下载 */
+export async function handleCancelCommand(session: Session, nhentaiService: NhentaiService): Promise<void> {
+  const task = nhentaiService.tasks.cancel(taskKey(session))
+  if (!task) {
+    await session.send('当前没有进行中的下载。')
+    return
+  }
+  const seconds = Math.round((Date.now() - task.startedAt) / 1000)
+  logger.info(`用户取消下载: 画廊 ${task.galleryId}，已进行 ${seconds}s`)
+  await session.send(`正在取消画廊 ${task.galleryId} 的下载（已进行 ${seconds}s）…`)
+}
+
+/** nh.retry：只补下上一次逐张下载失败的页 */
+export async function handleRetryCommand(
+  session: Session,
+  nhentaiService: NhentaiService,
+  config: Config,
+  baseDir?: string,
+): Promise<void> {
+  const record = nhentaiService.tasks.takeFailed(taskKey(session))
+  if (!record) {
+    await session.send('没有可重试的失败页（记录保留 30 分钟）。')
+    return
+  }
+
+  const pages = record.indexes.map((index) => index + 1).join(', ')
+  await session.send(`正在重试画廊 ${record.galleryId} 的 ${record.indexes.length} 张失败图片（页码 ${pages}）…`)
+  await handleDownloadCommand(
+    session,
+    record.galleryId,
+    { image: true, noPassword: true } as DownloadOptions,
+    nhentaiService,
+    config,
+    baseDir,
+    { onlyIndexes: record.indexes },
+  )
 }

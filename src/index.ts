@@ -26,6 +26,8 @@ export const usage = `
 | \`nh.download <ID/链接>\` | \`nh下载\` | 下载作品，\`-p\` PDF、\`-z\` ZIP、\`-i\` 逐张图片、\`-k\` 密码 |
 | \`nh.popular\` | \`nh热门\` | 今日热门，等价于 \`nh.search -s popular-today\` |
 | \`nh.random\` | \`nh随机\` | 随机推荐，\`Y\` 下载、\`F\` 换一个、\`N\` 退出 |
+| \`nh.cancel\` | \`nh取消\` | 取消当前进行中的下载 |
+| \`nh.retry\` | \`nh重试\` | 只补下上一次逐张下载失败的页 |
 
 搜索关键词支持官方过滤语法，如 \`artist:name\`、\`language:chinese\`、\`pages:>50\`、\`favorites:>=1000\`、\`uploaded:<7d\`、\`-tag:netorare\`。
 

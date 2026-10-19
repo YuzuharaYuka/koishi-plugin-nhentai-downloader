@@ -190,7 +190,7 @@ export class ApiService {
     if (optional) {
       if (!this.limiter.tryAcquire(key)) {
         const remaining = this.limiter.cooldownRemaining(key)
-        logger.info(
+        logger.debug(
           `${label}: 客户端配额已用尽${remaining > 0 ? `（冷却 ${Math.ceil(remaining / 1000)}s）` : ''}，跳过本次可选请求`,
         )
         return null

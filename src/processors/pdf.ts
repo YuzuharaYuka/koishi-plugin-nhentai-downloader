@@ -86,11 +86,12 @@ async function processImageBuffer(
 export async function createPdf(
   imageStream: AsyncIterable<DownloadedImage>,
   galleryId: string,
-  onProgress: (message: string) => void,
+  onProgress: ((message: string) => void) | undefined,
   password: string | undefined,
   processor: any, // Processor 实例
   config: Config,
   baseDir: string,
+  task?: { cancelled: boolean; throwIfCancelled(): void },
 ): Promise<string> {
   // 延迟加载 pdfkit（仅在需要时加载，避免早期加载 canvas 依赖）
   const PDFDocClass = await ensurePdfKitLoaded()
@@ -114,7 +115,8 @@ export async function createPdf(
     const writeStream = fs.createWriteStream(tempPdfPath)
     let pageCount = 0
 
-    onProgress('正在生成 PDF...')
+    logger.info(`画廊 ${galleryId}: 开始生成 PDF`)
+    onProgress?.('正在生成 PDF...')
 
     const imageCache = processor.getImageCache?.()
 
@@ -149,16 +151,21 @@ export async function createPdf(
           const head = inflight.shift()
           if (!head) break
           if (abortController.signal.aborted) break
+          task?.throwIfCancelled()
 
           const result = await head.task
           if ('error' in result) {
             logger.warn(`[Processor] 跳过处理失败的图片 ${head.image.index + 1}: ${result.error.message}`)
-            if (config.debug) onProgress(`处理第 ${head.image.index + 1} 张图片失败，已跳过。`)
+            if (config.debug) logger.warn(`画廊 ${galleryId}: 第 ${head.image.index + 1} 张处理失败，已跳过`)
+            if (config.debug) onProgress?.(`处理第 ${head.image.index + 1} 张图片失败，已跳过。`)
             continue
           }
 
           addedCount++
-          if (addedCount % 10 === 0) onProgress(`PDF生成进度: ${addedCount} 页`)
+          if (addedCount % 10 === 0) {
+            logger.info(`画廊 ${galleryId}: 已生成 ${addedCount} 页`)
+            onProgress?.(`PDF生成进度: ${addedCount} 页`)
+          }
 
           // 添加图片到 PDF，多页时新增页面
           if (addedCount > 1) {
@@ -178,7 +185,8 @@ export async function createPdf(
 
         if (addedCount === 0) throw new Error('没有成功处理任何图片，无法生成 PDF')
         pageCount = addedCount
-        onProgress(`正在保存 PDF (${addedCount} 张图片)...`)
+        logger.info(`画廊 ${galleryId}: ${addedCount} 页处理完毕，开始写入 PDF`)
+        onProgress?.(`正在保存 PDF (${addedCount} 张图片)...`)
       } catch (error) {
         abortController.abort()
         throw error
@@ -209,7 +217,7 @@ export async function createPdf(
             const stats = fs.statSync(tempPdfPath)
             const sizeInMB = (stats.size / 1024 / 1024).toFixed(2)
             logger.info(`PDF 生成完成: ${pageCount} 页, ${sizeInMB} MB ${password ? '（已加密）' : ''}`)
-            onProgress(`✓ PDF 生成完成！${password ? '（已用密码加密）' : ''}`)
+            onProgress?.(`✓ PDF 生成完成！${password ? '（已用密码加密）' : ''}`)
             resolve(tempPdfPath)
           } catch (error) {
             await cleanup(error instanceof Error ? error : new Error(String(error)))

@@ -43,7 +43,6 @@ export interface Config {
   promptTimeout: number
 
   downloadPath: string
-  fileSendMethod: 'buffer' | 'file'
   prependIdToFile: boolean
   titleType: 'japanese' | 'english' | 'pretty'
 
@@ -159,12 +158,6 @@ export const Config: Schema<Config> = Schema.intersect([
     downloadPath: Schema.string()
       .description('临时文件与缓存的存放路径，相对 Koishi 根目录')
       .default(DEFAULT_DOWNLOAD_PATH),
-    fileSendMethod: Schema.union([
-      Schema.const('file').description('文件路径'),
-      Schema.const('buffer').description('内存'),
-    ])
-      .description('PDF / ZIP 的发送方式，上百 MB 的大文件用 buffer 会占用大量内存')
-      .default('file'),
     prependIdToFile: Schema.boolean()
       .description('文件名前加上画廊 ID')
       .default(true),

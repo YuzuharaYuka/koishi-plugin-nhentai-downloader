@@ -21,7 +21,6 @@ const config: Config = {
   downloadPath: './data/temp/nhentai-downloader-bench',
   prependIdToFile: true,
   titleType: 'japanese',
-  fileSendMethod: 'buffer',
   imageCompression: { enabled: false, quality: 85, threshold: 500, maxEdge: 0 },
   antiGzip: { enabled: true },
   downloadConcurrency: 5,

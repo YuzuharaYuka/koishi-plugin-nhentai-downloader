@@ -55,7 +55,7 @@ async function main() {
   console.log('样本:', items.map((i: any) => `${i.id}/${i.thumbnail_width}x${i.thumbnail_height}`).join(' '))
 
   const generator = new MenuGenerator(config, { columns: 3, maxRows: 3 })
-  const png = await generator.generateMenu(galleries, thumbs, search.total ?? 1234, 0)
+  const png = await generator.generateMenu(galleries, thumbs, search.total ?? 1234, 0, { page: 2, totalPages: 20 })
   await writeFile(join(OUT_DIR, 'menu-real.jpg'), png)
   console.log(`菜单: ${(png.length / 1024).toFixed(0)} KB -> menu-real.jpg`)
 

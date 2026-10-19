@@ -17,7 +17,7 @@ export const API_BASE = `${API_ORIGIN}/api/v2`
 export const PLUGIN_NAME = 'nhentai-downloader'
 /** 发布到 npm 的包名，仅用于对外标识 */
 export const PACKAGE_NAME = 'koishi-plugin-nhentai-downloader'
-export const PLUGIN_VERSION = '2.1.2'
+export const PLUGIN_VERSION = '2.2.0'
 export const PLUGIN_HOMEPAGE = 'https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader'
 /** 官方要求写成 `AppName/version (contact or project URL)` */
 export const USER_AGENT = `${PACKAGE_NAME}/${PLUGIN_VERSION} (+${PLUGIN_HOMEPAGE})`
@@ -151,10 +151,10 @@ export const DEFAULT_COMPRESSION_THRESHOLD_KB = 500
 export const DEFAULT_COMPRESSION_MAX_EDGE = 0
 /** 逐张发送的图片质量。实测 90 → 82 体积降约 26%，观感无明显差别 */
 export const IMAGE_SEND_QUALITY = 82
-/** 菜单图片质量。菜单含照片缩略图，q95 的伪影不可见而体积只有 PNG 的三分之一 */
-export const MENU_JPEG_QUALITY = 95
-/** 菜单画布背景：比卡片底色略深，让卡片有边界感 */
-export const MENU_BACKGROUND_COLOR = '#121212'
+/** 菜单图片质量：q92 与 q95 观感几乎无差别，体积约小 15% */
+export const MENU_JPEG_QUALITY = 92
+/** 菜单画布背景，对齐 nhentai 深色主题 */
+export const MENU_BACKGROUND_COLOR = '#141414'
 /** ZIP 压缩级别：0 为存储模式（图片已是压缩格式，deflate 无收益） */
 export const ZIP_COMPRESSION_LEVEL = 0
 export const DEFAULT_DOWNLOAD_CONCURRENCY = 10
@@ -171,7 +171,10 @@ export const DEFAULT_PDF_CACHE_MAX_MB = 2048
 export const GC_TRIGGER_INTERVAL = 100
 export const PROGRESS_UPDATE_INTERVAL_MS = 1500
 export const IMAGE_LOAD_TIMEOUT_MS = 5000
-export const COVER_DOWNLOAD_TIMEOUT_MS = 30000
+/** 搜索菜单最多等一张缩略图多久：超时就画占位，不拖住整条消息 */
+export const MENU_COVER_TIMEOUT_MS = 8000
+/** 详情卡片等封面多久 */
+export const DETAIL_COVER_TIMEOUT_MS = 10000
 
 /**
  * 图片解码/编码的并发度。

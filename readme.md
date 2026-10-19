@@ -20,9 +20,11 @@ npm i koishi-plugin-nhentai-downloader
 | `nh.download <ID/链接>` | 下载作品，可输出 PDF / ZIP / 逐张图片 |
 | `nh.popular` | 今日热门 |
 | `nh.random` | 随机推荐 |
+| `nh.cancel` | 取消当前进行中的下载 |
+| `nh.retry` | 只补下上一次逐张下载失败的页 |
 
 - `nh.search`：`-s` 排序取 `date` / `popular` / `popular-today` / `popular-week` / `popular-month`，可简写 `today` / `week` / `month`；`-l` 语言取 `chinese` / `japanese` / `english` / `all`。
-- `nh.download`：`-p` PDF、`-z` ZIP、`-i` 逐张图片、`-k <密码>` 加密；不指定格式时使用配置里的 `defaultOutput`。
+- `nh.download`：`-p` PDF、`-z` ZIP、`-i` 逐张图片、`-k <密码>` 加密、`--no-password` 跳过默认密码；不指定格式时使用配置里的 `defaultOutput`。
 - 关键词支持官方过滤语法：`artist:name`、`language:chinese`、`pages:>50`、`favorites:>=1000`、`uploaded:<7d`，用 `-` 取反（`-tag:netorare`）。
 - 搜索结果回复序号即可下载，`F` 下一页、`B` 上一页、`N` 退出；`nh.random` 用 `Y` / `F` / `N` 交互。
 

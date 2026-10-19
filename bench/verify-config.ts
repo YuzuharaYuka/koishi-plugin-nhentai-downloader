@@ -20,7 +20,6 @@ const base: Config = {
   imageSendDelay: 1,
   promptTimeout: 60,
   downloadPath: './data/temp/nhentai-downloader',
-  fileSendMethod: 'file',
   prependIdToFile: true,
   titleType: 'japanese',
   imageCompression: { enabled: true, quality: 85, threshold: 500, maxEdge: 0 },

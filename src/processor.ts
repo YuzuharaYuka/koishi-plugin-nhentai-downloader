@@ -110,8 +110,9 @@ export class Processor {
   async createPdf(
     imageStream: AsyncIterable<DownloadedImage>,
     galleryId: string,
-    onProgress: (message: string) => void,
+    onProgress?: (message: string) => void,
     password?: string,
+    task?: { cancelled: boolean; throwIfCancelled(): void },
   ): Promise<string> {
     return createPdfHelper(
       imageStream,
@@ -121,6 +122,7 @@ export class Processor {
       this,
       this.config,
       this.ctx.app.baseDir,
+      task,
     )
   }
 

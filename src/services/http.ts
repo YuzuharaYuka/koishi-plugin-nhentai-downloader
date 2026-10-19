@@ -24,6 +24,8 @@ export interface StreamDownloadOptions {
   /** 传输停滞多久算超时（毫秒） */
   stallTimeoutMs?: number
   onProgress?: (downloadedBytes: number, totalBytes: number | null) => void
+  /** 外部取消信号：用于中止长下载（如用户执行 nh.cancel） */
+  signal?: AbortSignal
 }
 
 export class HttpManager {
@@ -78,6 +80,12 @@ export class HttpManager {
   async download(url: string, destPath: string, options: StreamDownloadOptions): Promise<number> {
     const controller = new AbortController()
     const stallTimeoutMs = options.stallTimeoutMs ?? ARCHIVE_STALL_TIMEOUT_MS
+
+    // 外部取消：转发到内部 controller，使 fetch 与管道一起中止
+    if (options.signal) {
+      if (options.signal.aborted) controller.abort(new Error('任务已取消'))
+      else options.signal.addEventListener('abort', () => controller.abort(new Error('任务已取消')), { once: true })
+    }
     let stallTimer: NodeJS.Timeout | null = null
     let received = 0
 

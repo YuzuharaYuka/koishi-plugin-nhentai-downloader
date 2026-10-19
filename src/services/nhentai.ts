@@ -2,8 +2,9 @@
  * 对外服务：把接口层与处理器组装成「查画廊、取封面、下载」三件事。
  */
 import type { Config } from '../config'
+import { type DownloadTask, TaskStore } from './task'
 import { logger, getErrorMessage } from '../utils'
-import { DEFAULT_THUMB_CDN, COVER_DOWNLOAD_TIMEOUT_MS } from '../constants'
+import { DEFAULT_THUMB_CDN, DETAIL_COVER_TIMEOUT_MS, MENU_COVER_TIMEOUT_MS } from '../constants'
 import { Processor } from '../processor'
 import type { Gallery, SearchGallery, MenuGallery } from '../types'
 import { ApiService } from './api'
@@ -85,6 +86,7 @@ export class CoverService {
   private async processDownloadResult(
     result: any,
     galleryId: string,
+    watermark = true,
   ): Promise<{ buffer: Buffer; extension: string } | null> {
     try {
       if (!('buffer' in result)) {
@@ -109,7 +111,10 @@ export class CoverService {
         return null
       }
 
-      // 缩略图只用于菜单预览：加完水印用 webp 低质量输出，避免体积翻几倍
+      // 合成进菜单时无需水印：整图重新编码后原图指纹已不可比，跳过可省一次解码与编码
+      if (!watermark) return { buffer: result.buffer, extension: result.extension || 'jpg' }
+
+      // 单独发送的缩略图才需要水印，webp 低质量输出避免体积翻几倍
       const processed = await this.processor.applyAntiGzip(result.buffer, `thumb-${galleryId}`, 'webp', 80)
       const extension = processed.format === 'original' ? result.extension : processed.format
       return { buffer: processed.buffer, extension }
@@ -130,6 +135,7 @@ export class CoverService {
     servers: CdnServers,
     timeoutMs?: number,
     prefer: 'thumb' | 'cover' = 'thumb',
+    watermark = true,
   ): Promise<{ buffer: Buffer; extension: string } | null> {
     const galleryId = String(gallery.id)
     const path = this.resolveThumbPath(gallery, prefer)
@@ -150,14 +156,23 @@ export class CoverService {
     })
 
     const result = timeoutMs ? await downloadWithTimeout(download, timeoutMs, '缩略图下载超时') : await download
-    return this.processDownloadResult(result, galleryId)
+    return this.processDownloadResult(result, galleryId, watermark)
   }
 
-  async downloadCover(gallery: Gallery): Promise<{ buffer: Buffer; extension: string } | null> {
+  async downloadCover(
+    gallery: Gallery,
+    options: { watermark?: boolean; timeoutMs?: number } = {},
+  ): Promise<{ buffer: Buffer; extension: string } | null> {
     try {
       const servers = await this.apiService.getCdnServers()
       // 单张封面用于详情卡片，取分辨率更高的 cover
-      return await this.fetchCover(gallery, servers, undefined, 'cover')
+      return await this.fetchCover(
+        gallery,
+        servers,
+        options.timeoutMs,
+        'cover',
+        options.watermark ?? true,
+      )
     } catch (e) {
       const errorMsg = getErrorMessage(e)
       logger.warn(`下载画廊 ${gallery.id} 的缩略图失败: ${errorMsg}`)
@@ -167,6 +182,7 @@ export class CoverService {
 
   async downloadCoversForGalleries(
     galleries: MenuGallery[],
+    options: { watermark?: boolean } = {},
   ): Promise<Map<string, { buffer: Buffer; extension: string }>> {
     const covers = new Map<string, { buffer: Buffer; extension: string }>()
     if (galleries.length === 0) return covers
@@ -191,7 +207,13 @@ export class CoverService {
           if (!gallery?.id || !gallery?.media_id) continue
 
           try {
-            const processed = await this.fetchCover(gallery, servers, COVER_DOWNLOAD_TIMEOUT_MS)
+            const processed = await this.fetchCover(
+              gallery,
+              servers,
+              MENU_COVER_TIMEOUT_MS,
+              'thumb',
+              options.watermark ?? true,
+            )
             if (processed) {
               covers.set(String(gallery.id), processed)
             }
@@ -230,7 +252,10 @@ export class NhentaiService {
     this.downloadManager = new DownloadManager(config, apiService, processor)
   }
 
-  async getGalleryWithCover(id: string): Promise<GalleryWithCover | null> {
+  async getGalleryWithCover(
+    id: string,
+    options: { watermark?: boolean } = {},
+  ): Promise<GalleryWithCover | null> {
     const gallery = await this.apiService.getGallery(id)
     if (!gallery) return null
 
@@ -239,14 +264,18 @@ export class NhentaiService {
       return { gallery }
     }
 
-    const cover = await this.coverService.downloadCover(gallery)
+    const cover = await this.coverService.downloadCover(gallery, {
+      watermark: options.watermark,
+      timeoutMs: DETAIL_COVER_TIMEOUT_MS,
+    })
     return cover ? { gallery, cover } : { gallery }
   }
 
   async getCoversForGalleries(
     galleries: MenuGallery[],
+    options: { watermark?: boolean } = {},
   ): Promise<Map<string, { buffer: Buffer; extension: string }>> {
-    return this.coverService.downloadCoversForGalleries(galleries)
+    return this.coverService.downloadCoversForGalleries(galleries, options)
   }
 
   // 获取随机画廊 ID
@@ -267,12 +296,17 @@ export class NhentaiService {
     }
   }
 
+  /** 进行中的下载任务与失败页记录，供取消与重试使用 */
+  readonly tasks = new TaskStore()
+
   async downloadGallery(
     id: string,
     outputType: 'pdf' | 'zip' | 'img',
     password?: string,
-    onProgress: (status: string) => Promise<void> = async () => {},
+    onProgress?: (status: string) => Promise<void>,
+    task?: DownloadTask,
+    options: { onlyIndexes?: number[] } = {},
   ): Promise<DownloadOutput | { error: string }> {
-    return this.downloadManager.downloadGallery(id, outputType, password, onProgress)
+    return this.downloadManager.downloadGallery(id, outputType, password, onProgress, task, options)
   }
 }
