@@ -91,8 +91,9 @@ function createArchiveProgressUpdate(
     if (now - last < intervalMs) return
     last = now
     const mb = (downloaded / 1024 / 1024).toFixed(1)
-    const suffix = total ? ` / ${(total / 1024 / 1024).toFixed(1)} MB` : ''
-    const status = `画廊 ${galleryId}: 已下载 ${mb}${suffix}（共 ${pageCount} 页）`
+    // 官方压缩包响应没有 content-length，此时也要带上单位
+    const size = total ? `${mb} / ${(total / 1024 / 1024).toFixed(1)} MB` : `${mb} MB`
+    const status = `画廊 ${galleryId}: 已下载 ${size}（共 ${pageCount} 页）`
     logger.info(status)
     if (onProgress) void onProgress(status)
   }
