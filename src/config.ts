@@ -43,6 +43,7 @@ export interface Config {
   promptTimeout: number
 
   downloadPath: string
+  fileSendMethod: 'file' | 'buffer'
   prependIdToFile: boolean
   titleType: 'japanese' | 'english' | 'pretty'
 
@@ -158,6 +159,12 @@ export const Config: Schema<Config> = Schema.intersect([
     downloadPath: Schema.string()
       .description('临时文件与缓存的存放路径，相对 Koishi 根目录')
       .default(DEFAULT_DOWNLOAD_PATH),
+    fileSendMethod: Schema.union([
+      Schema.const('file').description('本地文件路径（适配器与 Koishi 共享文件系统）'),
+      Schema.const('buffer').description('文件内容（适用于 Docker 或远程适配器）'),
+    ])
+      .description('PDF / ZIP 的发送方式，buffer 需要适配器支持文件内容传输，并占用更多内存')
+      .default('file'),
     prependIdToFile: Schema.boolean()
       .description('文件名前加上画廊 ID')
       .default(true),
@@ -283,6 +290,7 @@ export function normalizeConfig(config: Config): Config {
   return {
     ...config,
     defaultOutput: ['pdf', 'zip', 'img'].includes(config.defaultOutput) ? config.defaultOutput : 'pdf',
+    fileSendMethod: config.fileSendMethod === 'buffer' ? 'buffer' : 'file',
     searchMode: config.searchMode === 'text' ? 'text' : 'menu',
     imageSendDelay: clamp(config.imageSendDelay, 0, 10, DEFAULT_IMAGE_SEND_DELAY),
     promptTimeout: clamp(config.promptTimeout, 5, 600, DEFAULT_PROMPT_TIMEOUT),
