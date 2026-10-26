@@ -10,7 +10,7 @@ import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
 import { FORWARD_SUPPORTED_PLATFORMS, TAG_DISPLAY_LIMIT, type ValidSortOption } from './constants'
 import { CANCELLED } from './services/task'
-import { rm } from 'fs/promises'
+import { readFile, rm } from 'fs/promises'
 import { pathToFileURL } from 'url'
 
 export interface DownloadOptions {
@@ -740,14 +740,21 @@ export async function handleDownloadCommand(
     }
 
     switch (result.type) {
-      case 'pdf':
+      case 'pdf': {
         tempPdfPath = result.path
         shouldCleanupPdf = result.isTemporary
-        await session.send(h.file(pathToFileURL(tempPdfPath).href, { title: result.filename }))
+        const pdfFile = config.fileSendMethod === 'buffer'
+          ? h.file(await readFile(tempPdfPath), 'application/pdf', { title: result.filename })
+          : h.file(pathToFileURL(tempPdfPath).href, { title: result.filename })
+        await session.send(pdfFile)
         break
+      }
 
       case 'zip': {
-        // 先落盘再发路径：OneBot 等适配器只接受文件路径
+        if (config.fileSendMethod === 'buffer') {
+          await session.send(h.file(result.buffer, 'application/zip', { title: result.filename }))
+          break
+        }
         const { writeFile, mkdir, rm: rmFile } = await import('fs/promises')
         const { join, resolve, dirname } = await import('path')
         const downloadDir = baseDir ? resolve(baseDir, config.downloadPath) : config.downloadPath

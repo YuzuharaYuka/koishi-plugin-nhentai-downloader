@@ -44,6 +44,7 @@ npm i koishi-plugin-nhentai-downloader
 | `apiKey` | 空 | 提高接口配额并启用黑名单过滤 |
 | `defaultOutput` | `pdf` | 未指定格式时的输出：`pdf` / `zip` / `img` |
 | `defaultPassword` | 空 | PDF / ZIP 的默认密码 |
+| `fileSendMethod` | `file` | PDF / ZIP 发送方式：`file` 传本地路径，`buffer` 传文件内容，适用于 Docker 或远程适配器 |
 | `downloadSource` | `auto` | `auto` / `official` 优先官方直链，`cdn` 只逐页下载 |
 | `downloadConcurrency` | `10` | 逐页下载并发数 |
 | `downloadRetries` | `3` | 单张图片的尝试次数（含首次） |
@@ -52,6 +53,8 @@ npm i koishi-plugin-nhentai-downloader
 | `antiGzip.enabled` | `true` | 给逐张发送的图片与缩略图加水印 |
 | `enableLinkRecognition` | `false` | 识别消息中的 nhentai 链接并自动下载 |
 | `cache.*`、`textMode.*`、`debug` | 见配置页 | 缓存开关与有效期、文本列表样式、调试日志 |
+
+使用 `file` 时，适配器需要能够直接访问 Koishi 的文件路径。适配器运行在 Docker 或另一台机器时，可改为 `buffer`；该模式通过文件内容传输，需要适配器支持，并会增加内存和传输开销。
 
 ## 相关文档
 
