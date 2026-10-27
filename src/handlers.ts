@@ -8,9 +8,9 @@ import type { SearchResult, Tag, MenuGallery } from './types'
 import { ApiService } from './services/api'
 import { NhentaiService } from './services/nhentai'
 import { MenuService } from './services/menu'
-import { FORWARD_SUPPORTED_PLATFORMS, TAG_DISPLAY_LIMIT, type ValidSortOption } from './constants'
+import { BUFFER_WARN_SIZE, FORWARD_SUPPORTED_PLATFORMS, TAG_DISPLAY_LIMIT, type ValidSortOption } from './constants'
 import { CANCELLED } from './services/task'
-import { readFile, rm } from 'fs/promises'
+import { readFile, rm, stat } from 'fs/promises'
 import { pathToFileURL } from 'url'
 
 export interface DownloadOptions {
@@ -24,6 +24,17 @@ export interface DownloadOptions {
 export interface SearchOptions {
   sort?: ValidSortOption
   lang?: 'chinese' | 'japanese' | 'english' | 'all'
+}
+
+function formatMegabytes(size: number): string {
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+async function reportSendFailure(session: Session, filename: string, error: unknown): Promise<void> {
+  logger.warn('发送 %s 失败: %o', filename, error)
+  const hint = `发送「${filename}」失败: ${getErrorMessage(error)}
+文件过大时可能是协议端的单帧上限导致，可以调小 imageCompression 的尺寸后重试。`
+  await session.send(hint).catch(() => undefined)
 }
 
 export interface SearchHandlerOptions {
@@ -743,16 +754,33 @@ export async function handleDownloadCommand(
       case 'pdf': {
         tempPdfPath = result.path
         shouldCleanupPdf = result.isTemporary
-        const pdfFile = config.fileSendMethod === 'buffer'
-          ? h.file(await readFile(tempPdfPath), 'application/pdf', { title: result.filename })
-          : h.file(pathToFileURL(tempPdfPath).href, { title: result.filename })
-        await session.send(pdfFile)
+        const pdfSize = (await stat(tempPdfPath)).size
+        if (config.fileSendMethod === 'buffer' && pdfSize > BUFFER_WARN_SIZE) {
+          logger.warn(`PDF ${formatMegabytes(pdfSize)} 超过 ${formatMegabytes(BUFFER_WARN_SIZE)}，部分协议端可能因单帧上限断连`)
+        }
+        try {
+          if (config.fileSendMethod === 'buffer') {
+            await session.send(h.file(await readFile(tempPdfPath), 'application/pdf', { title: result.filename }))
+          } else {
+            await session.send(h.file(pathToFileURL(tempPdfPath).href, { title: result.filename }))
+          }
+        } catch (error) {
+          await reportSendFailure(session, result.filename, error)
+        }
         break
       }
 
       case 'zip': {
+        const zipSize = result.buffer.length
+        if (config.fileSendMethod === 'buffer' && zipSize > BUFFER_WARN_SIZE) {
+          logger.warn(`ZIP ${formatMegabytes(zipSize)} 超过 ${formatMegabytes(BUFFER_WARN_SIZE)}，部分协议端可能因单帧上限断连`)
+        }
         if (config.fileSendMethod === 'buffer') {
-          await session.send(h.file(result.buffer, 'application/zip', { title: result.filename }))
+          try {
+            await session.send(h.file(result.buffer, 'application/zip', { title: result.filename }))
+          } catch (error) {
+            await reportSendFailure(session, result.filename, error)
+          }
           break
         }
         const { writeFile, mkdir, rm: rmFile } = await import('fs/promises')
@@ -763,6 +791,8 @@ export async function handleDownloadCommand(
         await writeFile(tempZipPath, result.buffer)
         try {
           await session.send(h.file(pathToFileURL(tempZipPath).href, { title: result.filename }))
+        } catch (error) {
+          await reportSendFailure(session, result.filename, error)
         } finally {
           // 无论发送成功与否都清理，避免失败时残留大文件
           await rmFile(tempZipPath, { force: true }).catch((e) => {

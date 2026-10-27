@@ -17,7 +17,7 @@ export const API_BASE = `${API_ORIGIN}/api/v2`
 export const PLUGIN_NAME = 'nhentai-downloader'
 /** 发布到 npm 的包名，仅用于对外标识 */
 export const PACKAGE_NAME = 'koishi-plugin-nhentai-downloader'
-export const PLUGIN_VERSION = '2.2.0'
+export const PLUGIN_VERSION = '2.2.1'
 export const PLUGIN_HOMEPAGE = 'https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader'
 /** 官方要求写成 `AppName/version (contact or project URL)` */
 export const USER_AGENT = `${PACKAGE_NAME}/${PLUGIN_VERSION} (+${PLUGIN_HOMEPAGE})`
@@ -138,6 +138,13 @@ export const galleryIdRegex = new RegExp(`^(?:(?:https?://)?(?:${hostPattern})/g
 
 // ─── 界面 ────────────────────────────────────────────────────
 export const FORWARD_SUPPORTED_PLATFORMS = ['qq', 'onebot']
+
+/**
+ * buffer 发送的体积告警阈值。超过只记日志，不改变发送方式：
+ * NapCat 的 ws 帧上限是 64 MiB、SnowLuma 是 100 MiB（base64 后约 3/4），
+ * 越界会直接断连而不是返回错误。
+ */
+export const BUFFER_WARN_SIZE = 32 * 1024 * 1024
 export const TAG_DISPLAY_LIMIT = 8
 
 // ─── 默认值 ──────────────────────────────────────────────────

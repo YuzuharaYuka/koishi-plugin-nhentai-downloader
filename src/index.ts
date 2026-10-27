@@ -1,4 +1,6 @@
+import { resolve } from 'path'
 import { Context } from 'koishi'
+import type {} from '@koishijs/plugin-console'
 import { PLUGIN_NAME } from './constants'
 import { type Config, normalizeConfig } from './config'
 import { logger } from './utils'
@@ -12,7 +14,7 @@ export const name = PLUGIN_NAME
 // 网络请求统一走 Koishi 的 ctx.http，代理交给 proxy-agent 插件
 export const inject = {
   required: ['http'],
-  optional: [],
+  optional: ['console'],
 }
 
 export const usage = `
@@ -33,11 +35,20 @@ export const usage = `
 
 搜索结果回复序号即可下载，\`F\` 下一页、\`B\` 上一页、\`N\` 退出。
 
-配置 \`apiKey\` 可提高接口配额并启用黑名单过滤；无法访问 nhentai 时请配置 proxy-agent 代理。
+**API Key**：登录后打开 <https://nhentai.net/user/settings#apikeys> 生成，填到配置的 \`apiKey\`。
+
+无法访问 nhentai 时请配置 proxy-agent 代理。
 `
 
 export function apply(ctx: Context, rawConfig: Config) {
   const config = normalizeConfig(rawConfig)
+
+  ctx.inject(['console'], (ctx) => {
+    ctx.console.addEntry({
+      dev: resolve(__dirname, '../client/index.ts'),
+      prod: resolve(__dirname, '../dist'),
+    })
+  })
 
   ctx.plugin((ctx) => {
     const plugin = new NhentaiPlugin(ctx, config)

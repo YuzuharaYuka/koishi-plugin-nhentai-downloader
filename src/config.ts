@@ -85,10 +85,6 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
-    apiKey: Schema.string()
-      .role('secret')
-      .description('nhentai 官方 API Key')
-      .default(''),
     defaultOutput: Schema.union([
       Schema.const('pdf').description('PDF 文件'),
       Schema.const('zip').description('ZIP 压缩包'),
@@ -104,11 +100,15 @@ export const Config: Schema<Config> = Schema.intersect([
     ])
       .description('默认语言筛选')
       .default('all'),
+    apiKey: Schema.string()
+      .role('secret')
+      .description('官方直链需要的 API Key，留空只用 CDN')
+      .default(''),
     defaultPassword: Schema.string()
       .role('secret')
-      .description('PDF / ZIP 的默认密码，留空则不加密'),
+      .description('PDF / ZIP 的默认密码，留空不加密'),
     enableLinkRecognition: Schema.boolean()
-      .description('识别消息中的 nhentai 链接并自动下载')
+      .description('自动识别消息中的画廊链接')
       .default(false),
   }).description('基础'),
 
@@ -122,17 +122,17 @@ export const Config: Schema<Config> = Schema.intersect([
     menuMode: Schema.object({
       columns: Schema.number()
         .min(1).max(5).step(1)
-        .description('每行显示数量')
+        .description('每行列数')
         .default(3),
       maxRows: Schema.number()
         .min(1).max(5).step(1)
-        .description('最大行数')
+        .description('最多行数')
         .default(3),
     }).description('图片菜单'),
     textMode: Schema.object({
       searchResultLimit: Schema.number()
         .min(1).max(25).step(1)
-        .description('每页显示数量')
+        .description('每页条数')
         .default(10),
       showTags: Schema.boolean().description('显示标签').default(true),
       showLink: Schema.boolean().description('显示链接').default(true),
@@ -142,32 +142,71 @@ export const Config: Schema<Config> = Schema.intersect([
   }).description('搜索'),
 
   Schema.object({
-    useForwardForDownload: Schema.boolean()
-      .description('逐张发送图片时使用合并转发')
+    downloadSource: Schema.union([
+      Schema.const('auto').description('自动'),
+      Schema.const('official').description('官方直链'),
+      Schema.const('cdn').description('仅 CDN'),
+    ])
+      .description('取图方式，官方直链需要 API Key，失败自动回退 CDN')
+      .default('auto'),
+    downloadConcurrency: Schema.number()
+      .min(1).max(25).step(1)
+      .description('逐页下载并发数')
+      .default(DEFAULT_DOWNLOAD_CONCURRENCY),
+    downloadTimeout: Schema.number()
+      .min(5).max(300).step(1)
+      .description('单张图片超时（秒）')
+      .default(DEFAULT_DOWNLOAD_TIMEOUT),
+    downloadRetries: Schema.number()
+      .min(0).max(5).step(1)
+      .description('单张图片尝试次数，含首次')
+      .default(DEFAULT_DOWNLOAD_RETRIES),
+    downloadRetryDelay: Schema.number()
+      .min(0).max(60).step(1)
+      .description('重试间隔（秒）')
+      .default(DEFAULT_RETRY_DELAY_SECONDS),
+    officialArchiveTimeout: Schema.number()
+      .min(30).max(3600).step(30)
+      .description('官方压缩包超时（秒）')
+      .default(DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
+    enableSmartRetry: Schema.boolean()
+      .description('失败时切换图片服务器')
       .default(true),
-    imageSendDelay: Schema.number()
-      .min(0).max(10).step(1)
-      .description('每张图片的发送间隔（秒）')
-      .default(DEFAULT_IMAGE_SEND_DELAY),
-    promptTimeout: Schema.number()
-      .min(5).max(600).step(1)
-      .description('交互等待超时（秒）')
-      .default(DEFAULT_PROMPT_TIMEOUT),
-  }).description('消息'),
+  }).description('下载'),
 
   Schema.object({
-    downloadPath: Schema.string()
-      .description('临时文件与缓存的存放路径，相对 Koishi 根目录')
-      .default(DEFAULT_DOWNLOAD_PATH),
+    imageCompression: Schema.object({
+      enabled: Schema.boolean()
+        .description('JPEG 内页也重新编码，关闭后只转码 PDF 不支持的 webp / png')
+        .default(true),
+      quality: Schema.number()
+        .min(1).max(100).step(1).role('slider')
+        .description('JPEG 质量')
+        .default(DEFAULT_COMPRESSION_QUALITY),
+      threshold: Schema.number()
+        .min(0).max(10240)
+        .description('小于该体积的 JPEG 直接嵌入（KB），0 表示全部重编码')
+        .default(DEFAULT_COMPRESSION_THRESHOLD_KB),
+      maxEdge: Schema.number()
+        .min(0).max(4096).step(1)
+        .description('内页最长边（像素），0 为不缩放')
+        .default(DEFAULT_COMPRESSION_MAX_EDGE),
+    }).description('PDF 内页压缩'),
+    antiGzip: Schema.object({
+      enabled: Schema.boolean()
+        .description('逐张发送的图片与搜索缩略图加水印')
+        .default(true)
+        .experimental(),
+    }).description('水印'),
+  }).description('图片'),
+
+  Schema.object({
     fileSendMethod: Schema.union([
-      Schema.const('file').description('本地文件路径（适配器与 Koishi 共享文件系统）'),
-      Schema.const('buffer').description('文件内容（适用于 Docker 或远程适配器）'),
+      Schema.const('file').description('本地文件路径'),
+      Schema.const('buffer').description('文件内容'),
     ])
-      .description('PDF / ZIP 的发送方式，buffer 需要适配器支持文件内容传输，并占用更多内存')
+      .description('PDF / ZIP 发送方式。协议端读不到本地路径时选 buffer')
       .default('file'),
-    prependIdToFile: Schema.boolean()
-      .description('文件名前加上画廊 ID')
-      .default(true),
     titleType: Schema.union([
       Schema.const('japanese').description('日文标题'),
       Schema.const('english').description('英文标题'),
@@ -175,82 +214,33 @@ export const Config: Schema<Config> = Schema.intersect([
     ])
       .description('文件名使用的标题')
       .default('japanese'),
-  }).description('文件'),
-
-  Schema.object({
-    imageCompression: Schema.object({
-      enabled: Schema.boolean()
-        .description('对已是 JPEG 的内页也按质量重新编码，关闭后只转码 PDF 无法嵌入的 webp / png')
-        .default(true),
-      quality: Schema.number()
-        .min(1).max(100).step(1).role('slider')
-        .description('JPEG 质量 (1-100)')
-        .default(DEFAULT_COMPRESSION_QUALITY),
-      threshold: Schema.number()
-        .min(0).max(10240)
-        .description('小于该体积（KB）的 JPEG 原图直接嵌入，0 为全部重新编码')
-        .default(DEFAULT_COMPRESSION_THRESHOLD_KB),
-      maxEdge: Schema.number()
-        .min(0).max(4096).step(1)
-        .description('内页最长边上限（像素），0 为不限制，设为 1600 体积约降20%')
-        .default(DEFAULT_COMPRESSION_MAX_EDGE),
-    }),
-    antiGzip: Schema.object({
-      enabled: Schema.boolean()
-        .description('给逐张发送的图片与搜索缩略图加水印')
-        .default(true)
-        .experimental(),
-    }),
-  }).description('图片'),
-
-  Schema.object({
-    downloadSource: Schema.union([
-      Schema.const('auto').description('自动'),
-      Schema.const('official').description('官方直链'),
-      Schema.const('cdn').description('仅 CDN'),
-    ])
-      .description('取图方式，官方直链由 nhentai 打包，需要 API Key，失败时自动改用 CDN')
-      .default('auto'),
-    downloadConcurrency: Schema.number()
-      .min(1).max(25).step(1)
-      .description('逐页下载的最大并发数')
-      .default(DEFAULT_DOWNLOAD_CONCURRENCY),
-    downloadTimeout: Schema.number()
-      .min(5).max(300).step(1)
-      .description('单张图片下载超时（秒）')
-      .default(DEFAULT_DOWNLOAD_TIMEOUT),
-    downloadRetries: Schema.number()
-      .min(0).max(5).step(1)
-      .description('单张图片的尝试次数，含首次')
-      .default(DEFAULT_DOWNLOAD_RETRIES),
-    downloadRetryDelay: Schema.number()
-      .min(0).max(60).step(1)
-      .description('重试间隔（秒）')
-      .default(DEFAULT_RETRY_DELAY_SECONDS),
-    enableSmartRetry: Schema.boolean()
-      .description('失败时切换其他图片服务器')
+    imageSendDelay: Schema.number()
+      .min(0).max(10).step(1)
+      .description('图片发送间隔（秒）')
+      .default(DEFAULT_IMAGE_SEND_DELAY),
+    promptTimeout: Schema.number()
+      .min(5).max(600).step(1)
+      .description('等待回复超时（秒）')
+      .default(DEFAULT_PROMPT_TIMEOUT),
+    prependIdToFile: Schema.boolean()
+      .description('文件名前缀画廊 ID')
       .default(true),
-    officialArchiveTimeout: Schema.number()
-      .min(30).max(3600).step(30)
-      .description('官方压缩包下载超时（秒）')
-      .default(DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
-  }).description('下载'),
+    useForwardForDownload: Schema.boolean()
+      .description('逐张发送时用合并转发')
+      .default(true),
+  }).description('发送与交互'),
 
   Schema.object({
+    downloadPath: Schema.string()
+      .description('临时文件与缓存目录，相对 Koishi 根目录')
+      .default(DEFAULT_DOWNLOAD_PATH),
     cache: Schema.object({
-      enableApiCache: Schema.boolean()
-        .description('缓存接口响应（内存）')
-        .default(true),
-      apiCacheTTL: Schema.number()
-        .min(1).max(1440).step(1)
-        .description('接口缓存有效期（分钟）')
-        .default(DEFAULT_API_CACHE_TTL_MINUTES),
       enableImageCache: Schema.boolean()
         .description('缓存图片（磁盘）')
         .default(true),
       imageCacheTTL: Schema.number()
         .min(0).max(720).step(1)
-        .description('图片缓存有效期（小时），0 为永久')
+        .description('图片缓存有效期（小时），0 永久')
         .default(DEFAULT_IMAGE_CACHE_TTL_HOURS),
       imageCacheMaxSize: Schema.number()
         .min(100).max(10240).step(1)
@@ -261,14 +251,21 @@ export const Config: Schema<Config> = Schema.intersect([
         .default(false),
       pdfCacheTTL: Schema.number()
         .min(0).max(720).step(1)
-        .description('PDF 缓存有效期（小时），0 为永久')
+        .description('PDF 缓存有效期（小时），0 永久')
         .default(DEFAULT_PDF_CACHE_TTL_HOURS),
       pdfCacheMaxSize: Schema.number()
         .min(100).max(10240).step(1)
         .description('PDF 缓存上限（MB）')
         .default(DEFAULT_PDF_CACHE_MAX_MB),
-    }),
-  }).description('缓存'),
+      enableApiCache: Schema.boolean()
+        .description('缓存接口响应（内存）')
+        .default(true),
+      apiCacheTTL: Schema.number()
+        .min(1).max(1440).step(1)
+        .description('接口缓存有效期（分钟）')
+        .default(DEFAULT_API_CACHE_TTL_MINUTES),
+    }).description('缓存'),
+  }).description('存储'),
 
   Schema.object({
     debug: Schema.boolean().description('输出调试日志').default(false),

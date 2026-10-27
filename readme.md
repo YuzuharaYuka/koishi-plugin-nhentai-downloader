@@ -1,65 +1,67 @@
 # koishi-plugin-nhentai-downloader
 
-[Koishi](https://koishi.chat/) 的 [nhentai](https://nhentai.net/) 漫画搜索与下载插件，支持搜索作品、按 ID 下载，输出 PDF / ZIP / 逐张图片。
+[Koishi](https://koishi.chat/) 的 [nhentai](https://nhentai.net/) 搜索与下载插件，输出 PDF / ZIP / 逐张图片。
 
-**内容涉及成人向漫画，请在合适的范围内使用。**
+内容涉及成人向漫画，请在合适的范围内使用。
 
 ```bash
 npm i koishi-plugin-nhentai-downloader
 ```
 
-需要 Koishi 4.18 及以上，且能访问 `nhentai.net` 与其 CDN；网络受限时请配置 [proxy-agent](https://koishi.chat/plugins/accessibility/proxy-agent.html)。
+需要 Koishi 4.18 及以上，并能访问 `nhentai.net` 与其 CDN；网络受限时配置 [proxy-agent](https://koishi.chat/plugins/accessibility/proxy-agent.html)。
 
 ## 指令
 
 主指令 `nh`（别名 `nhentai`），`nh.指令`、`nh指令`、`nh command` 三种写法都可以。
 
-| 指令 | 说明 |
-| :--- | :--- |
-| `nh.search <关键词/ID>` | 搜索作品，支持排序与语言筛选 |
-| `nh.download <ID/链接>` | 下载作品，可输出 PDF / ZIP / 逐张图片 |
-| `nh.popular` | 今日热门 |
-| `nh.random` | 随机推荐 |
-| `nh.cancel` | 取消当前进行中的下载 |
-| `nh.retry` | 只补下上一次逐张下载失败的页 |
+| 指令 | 别名 | 说明 |
+| :--- | :--- | :--- |
+| `nh.search <关键词/ID>` | `nh搜索` | 搜索作品 |
+| `nh.download <ID/链接>` | `nh下载` | 下载作品 |
+| `nh.popular` | `nh热门` | 今日热门 |
+| `nh.random` | `nh随机` | 随机推荐 |
+| `nh.cancel` | `nh取消` | 取消进行中的下载 |
+| `nh.retry` | `nh重试` | 补下上次失败的页 |
 
-- `nh.search`：`-s` 排序取 `date` / `popular` / `popular-today` / `popular-week` / `popular-month`，可简写 `today` / `week` / `month`；`-l` 语言取 `chinese` / `japanese` / `english` / `all`。
-- `nh.download`：`-p` PDF、`-z` ZIP、`-i` 逐张图片、`-k <密码>` 加密、`--no-password` 跳过默认密码；不指定格式时使用配置里的 `defaultOutput`。
-- 关键词支持官方过滤语法：`artist:name`、`language:chinese`、`pages:>50`、`favorites:>=1000`、`uploaded:<7d`，用 `-` 取反（`-tag:netorare`）。
-- 搜索结果回复序号即可下载，`F` 下一页、`B` 上一页、`N` 退出；`nh.random` 用 `Y` / `F` / `N` 交互。
-
-## 说明
-
-- **输出**：PDF 会把内页转成 JPEG（PDF 无法嵌入 webp），ZIP 原样存入图片，逐张发送按平台能力决定是否合并转发；PDF 与 ZIP 都支持密码。
-- **取图**：配置 `apiKey` 后默认优先走官方打包直链，签发受限或下载失败会自动改用 CDN 逐页下载，不会因此下载不了。
-- **抗风控**：`antiGzip` 给逐张发送的图片与搜索缩略图加上低透明度水印，PDF / ZIP 内的图片不受影响。
-- **缓存**：接口响应缓存在内存，图片与 PDF 缓存在 `downloadPath`，同一作品重复下载直接命中缓存。
-- **配额**：接口按官方配额限流，匿名配额较低；填入 `apiKey` 可提高配额并启用黑名单过滤。
-- **并发**：官方 CDN 会临时封禁异常高速的请求，`downloadConcurrency` 默认 10，下载失败较多时可调低。
+- `nh.search`：`-s` 排序取 `date` / `popular` / `popular-today` / `popular-week` / `popular-month`（可简写 `today` / `week` / `month`），`-l` 取 `chinese` / `japanese` / `english` / `all`。
+- `nh.download`：`-p` PDF、`-z` ZIP、`-i` 逐张图片、`-k <密码>` 加密、`--no-password` 跳过默认密码；不指定时用 `defaultOutput`。
+- 关键词支持官方过滤语法，如 `artist:name`、`language:chinese`、`pages:>50`、`favorites:>=1000`，`-tag:netorare` 表示排除。
+- 搜索结果回复序号下载，`F` 下一页、`B` 上一页、`N` 退出；`nh.random` 用 `Y` / `F` / `N`。
 
 ## 配置
 
-| 配置项 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `apiKey` | 空 | 提高接口配额并启用黑名单过滤 |
-| `defaultOutput` | `pdf` | 未指定格式时的输出：`pdf` / `zip` / `img` |
-| `defaultPassword` | 空 | PDF / ZIP 的默认密码 |
-| `fileSendMethod` | `file` | PDF / ZIP 发送方式：`file` 传本地路径，`buffer` 传文件内容，适用于 Docker 或远程适配器 |
-| `downloadSource` | `auto` | `auto` / `official` 优先官方直链，`cdn` 只逐页下载 |
-| `downloadConcurrency` | `10` | 逐页下载并发数 |
-| `downloadRetries` | `3` | 单张图片的尝试次数（含首次） |
-| `searchMode` | `menu` | 结果展示方式：`menu` 图片菜单 / `text` 文本列表 |
-| `imageCompression.enabled` | `true` | 重新编码 PDF 内页，`quality` / `maxEdge` 见配置页 |
-| `antiGzip.enabled` | `true` | 给逐张发送的图片与缩略图加水印 |
-| `enableLinkRecognition` | `false` | 识别消息中的 nhentai 链接并自动下载 |
-| `cache.*`、`textMode.*`、`debug` | 见配置页 | 缓存开关与有效期、文本列表样式、调试日志 |
+配置页右侧有分组导航，可直接跳到对应分组。
 
-使用 `file` 时，适配器需要能够直接访问 Koishi 的文件路径。适配器运行在 Docker 或另一台机器时，可改为 `buffer`；该模式通过文件内容传输，需要适配器支持，并会增加内存和传输开销。
+| 分组 | 配置项 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| 基础 | `defaultOutput` | `pdf` | 未指定格式时的输出：`pdf` / `zip` / `img` |
+| 基础 | `apiKey` | 空 | 官方直链需要，留空只用 CDN |
+| 基础 | `defaultPassword` | 空 | PDF / ZIP 的默认密码 |
+| 搜索 | `searchMode` | `menu` | `menu` 图片菜单 / `text` 文本列表 |
+| 下载 | `downloadSource` | `auto` | `auto` / `official` 优先官方直链，`cdn` 只逐页下载 |
+| 下载 | `downloadConcurrency` | `10` | 逐页下载并发数 |
+| 图片 | `imageCompression.enabled` | `true` | 重新编码 PDF 内页 |
+| 图片 | `antiGzip.enabled` | `true` | 给逐张图片与缩略图加水印 |
+| 发送与交互 | `fileSendMethod` | `file` | `file` 传本地路径，`buffer` 传文件内容 |
+| 存储 | `downloadPath` | `./data/temp/nhentai-downloader` | 临时文件与缓存目录 |
+| 存储 | `cache.*` | 见配置页 | 图片 / PDF / 接口缓存 |
+| 调试 | `debug` | `false` | 输出调试日志 |
+
+`apiKey` 在 [账号设置](https://nhentai.net/user/settings#apikeys) 生成。填了才能用官方直链取图，接口配额也更高。
+
+`fileSendMethod` 为 `file` 时，适配器要能读到 Koishi 的文件路径；适配器在 Docker 或另一台机器上时改为 `buffer`。`buffer` 走文件内容传输，占用更多内存，且协议端的 WebSocket 有单帧上限（NapCat约64MiB、SnowLuma 约100MiB），文件过大时会导致断连。
+
+## 说明
+
+- PDF 会把内页转成 JPEG（PDF 不支持 webp），ZIP 原样存入；两者都支持密码。
+- 官方直链签发受限或下载失败时会自动改用 CDN 逐页下载。
+- 接口响应缓存在内存，图片与 PDF 缓存在 `downloadPath`，重复下载直接命中。
+- CDN 会临时封禁异常高速的请求，失败较多时调低 `downloadConcurrency`。
 
 ## 相关文档
 
 - nhentai API v2 文档：https://nhentai.net/api/v2/docs
-- 本项目的接口整理（端点 / 鉴权 / 限流 / 数据结构）：https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/blob/master/docs/nhentai-api-v2.md
+- 接口整理（端点 / 鉴权 / 限流 / 数据结构）：https://github.com/YuzuharaYuka/koishi-plugin-nhentai-downloader/blob/master/docs/nhentai-api-v2.md
 
 ## License
 
