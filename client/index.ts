@@ -31,7 +31,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: '搜索', header: '搜索' },
       { label: '下载', header: '下载' },
       { label: '图片', header: '图片' },
-      { label: '发送与交互', header: '发送与交互' },
+      { label: '发送', header: '发送' },
       { label: '存储', header: '存储' },
     ],
   },

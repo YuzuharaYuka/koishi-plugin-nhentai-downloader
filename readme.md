@@ -42,7 +42,7 @@ npm i koishi-plugin-nhentai-downloader
 | 下载 | `downloadConcurrency` | `10` | 逐页下载并发数 |
 | 图片 | `imageCompression.enabled` | `true` | 重新编码 PDF 内页 |
 | 图片 | `antiGzip.enabled` | `true` | 给逐张图片与缩略图加水印 |
-| 发送与交互 | `fileSendMethod` | `file` | `file` 传本地路径，`buffer` 传文件内容 |
+| 发送 | `fileSendMethod` | `file` | `file` 传本地路径，`buffer` 传文件内容 |
 | 存储 | `downloadPath` | `./data/temp/nhentai-downloader` | 临时文件与缓存目录 |
 | 存储 | `cache.*` | 见配置页 | 图片 / PDF / 接口缓存 |
 | 调试 | `debug` | `false` | 输出调试日志 |

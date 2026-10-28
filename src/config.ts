@@ -228,7 +228,7 @@ export const Config: Schema<Config> = Schema.intersect([
     useForwardForDownload: Schema.boolean()
       .description('逐张发送时用合并转发')
       .default(true),
-  }).description('发送与交互'),
+  }).description('发送'),
 
   Schema.object({
     downloadPath: Schema.string()
